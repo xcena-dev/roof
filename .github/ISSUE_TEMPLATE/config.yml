@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question, or a design discussion
+    url: https://github.com/xcena-dev/roof/discussions
+    about: >-
+      Ask whether ROOF fits your hardware or your workload, how it compares to other approaches,
+      or why the design is shaped this way. Discussions keep the issue tracker to things that are
+      actionable.
+  - name: Security vulnerability
+    url: https://github.com/xcena-dev/roof/security/advisories/new
+    about: >-
+      Report privately. Read docs/security_report.md first: the design trusts each host's kernel,
+      and so root on that host, so several things that look like vulnerabilities are stated design
+      boundaries.

@@ -1,0 +1,7 @@
+# Build trees live under the source dir during development; none of them are tracked.
+build/
+build-*/
+
+# The cargo build of the regorus C FFI wrapper.
+regorus_ffi/target/
+regorus_ffi/Cargo.lock

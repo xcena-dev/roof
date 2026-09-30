@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# @DAEMON_NAME@ authorization policy (example, Rego/OPA).
+# Copy to /etc/@FS_NAME@/policy.rego. Select via daemon.yaml backends.policy=opa.
+#
+# Input (provided by @DAEMON_NAME@):
+#   input.consumer.group / .role  — resolved on the local node
+#   input.owner.group / .role     — from CXL-shared RAT metadata
+#
+# Output:
+#   data.@FS_NAME@.authz.allow         — bool
+#   data.@FS_NAME@.authz.granted_perms — list of perm strings
+#   data.@FS_NAME@.authz.expiry_secs   — int (RAT delegation TTL seconds)
+#   data.@FS_NAME@.authz.rule          — string (the rule that decided, for the audit trail)
+
+package @FS_NAME@.authz
+
+import rego.v1
+
+default allow := false
+default granted_perms := []
+default expiry_secs := 0
+default rule := ""
+
+same_group_llm_worker if {
+    input.consumer.group == "prod"
+    input.consumer.role in ["llm-worker", "llm-prefill", "llm-decode"]
+    input.owner.group == input.consumer.group
+}
+
+cross_role_prefill_to_decode if {
+    input.consumer.group == "prod"
+    input.consumer.role == "llm-decode"
+    input.owner.group == input.consumer.group
+    input.owner.role == "llm-prefill"
+}
+
+admin_tools if {
+    input.consumer.role == "@FS_NAME@-admin"
+}
+
+read_only_consumer if {
+    input.consumer.role == "@FS_NAME@-reader"
+}
+
+allow if same_group_llm_worker
+allow if cross_role_prefill_to_decode
+allow if admin_tools
+allow if read_only_consumer
+
+granted_perms := ["READ", "WRITE"] if same_group_llm_worker
+granted_perms := ["READ"] if {
+    not same_group_llm_worker
+    cross_role_prefill_to_decode
+}
+granted_perms := ["READ", "WRITE", "ADMIN"] if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    admin_tools
+}
+granted_perms := ["READ"] if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    not admin_tools
+    read_only_consumer
+}
+
+expiry_secs := 3600 if same_group_llm_worker
+expiry_secs := 3600 if {
+    not same_group_llm_worker
+    cross_role_prefill_to_decode
+}
+expiry_secs := 600 if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    admin_tools
+}
+expiry_secs := 600 if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    not admin_tools
+    read_only_consumer
+}
+
+rule := "same-group-llm-worker" if same_group_llm_worker
+rule := "cross-role-prefill-to-decode" if {
+    not same_group_llm_worker
+    cross_role_prefill_to_decode
+}
+rule := "admin-tools" if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    admin_tools
+}
+rule := "read-only-consumer" if {
+    not same_group_llm_worker
+    not cross_role_prefill_to_decode
+    not admin_tools
+    read_only_consumer
+}

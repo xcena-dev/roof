@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+# A thin C ABI over the regorus rego engine, so the policy backend evaluates rego in-process.
+
+[package]
+name = "daemon_regorus_ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "daemon_regorus_ffi"
+crate-type = ["staticlib"]
+
+# Default features, so a policy may call every builtin regorus ships. Narrowing them moves a
+# missing builtin from a build error to a runtime denial.
+[dependencies]
+regorus = "0.2"
+serde_json = "1"
+
+# A build dependency, not a host tool, so no build machine needs cbindgen installed.
+[build-dependencies]
+cbindgen = "0.27"
+
+[profile.release]
+opt-level = 2

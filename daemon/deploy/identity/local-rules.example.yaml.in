@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# local-rules.example.yaml — static identity rules for LocalIdentityProvider.
+# Copy to /etc/@FS_NAME@/identity-rules.yaml. Send SIGHUP to reload.
+#
+# Each rule matches the calling task's credentials → group + role identity.
+# Multiple selectors AND together. First matching rule wins.
+#
+# The kernel sends what it read from that task: uid, gid, and the exe's inode. A snapshot taken
+# here has to agree with all three, so a task that execs between the two attests to nothing.
+#
+# Selector fields (mirror SPIRE unix workload attestor):
+#   match.uid                  — real UID
+#   match.gid                  — real GID
+#   match.supplementary_gid    — any GID in Groups: line
+#   match.path                 — the exe the task is running, resolved from its descriptor
+#
+# path is what separates one binary from another under the same account: a process that execs
+# into a different one stops matching a rule that names the first. The daemon also checks that the
+# name resolves to the inode the kernel read, so a name bind-mounted in a private namespace fails.
+#
+# NOTE: Only kinds listed in daemon.yaml `selectors:` are accepted;
+# rules using other kinds are dropped at load.
+
+rules:
+  # uid-only — every process owned by the account install.sh was run for. A rule naming a uid
+  # that is nobody on this host, with the deny below it, refuses every attest.
+  - match:
+      uid: @APP_UID@
+    identity:
+      spiffe_id: spiffe://@FS_NAME@.local/group/prod/role/llm-worker
+      group:     prod
+      role:      llm-worker
+
+  # Examples — requires broader selectors: list in daemon.yaml:
+  #
+  # # one binary under that account and no other (needs `path` in selectors:)
+  # - match:
+  #     uid: 1004
+  #     path: /usr/local/bin/vllm
+  #   identity:
+  #     spiffe_id: spiffe://@FS_NAME@.local/group/prod/role/llm-worker
+  #     group:     prod
+  #     role:      llm-worker
+  #
+  # # match by supplementary GID (needs `supplementary_gid` in selectors:)
+  # - match:
+  #     supplementary_gid: 4001
+  #   identity:
+  #     spiffe_id: spiffe://@FS_NAME@.local/group/prod/role/@FS_NAME@-reader
+  #     group:     prod
+  #     role:      @FS_NAME@-reader
+  #
+  # # AND of uid + supplementary GID (needs both in selectors:)
+  # - match:
+  #     uid: 1001
+  #     supplementary_gid: 4002
+  #   identity:
+  #     spiffe_id: spiffe://@FS_NAME@.local/group/prod/role/llm-decode
+  #     group:     prod
+  #     role:      llm-decode
+
+default: deny

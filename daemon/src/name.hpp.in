@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright XCENA Inc.
+//
+// name.hpp -- the tree's one name, for the paths and the trust domain the daemon derives.
+//
+// Rendered from name.hpp.in at configure time, so the daemon's defaults follow the same fsname
+// line the kernel headers do.
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace fsdaemon::name
+{
+
+// The filesystem's own name: kernel module, mount point, service account.
+inline constexpr std::string_view FsName = "@FS_NAME@";
+inline constexpr std::string_view FsNameUpper = "@FS_UPPER@";
+// This daemon's own name, which the channel device carries too.
+inline constexpr std::string_view DaemonName = "@DAEMON_NAME@";
+
+// The char device the kernel opens per mount: /dev/<daemon>-<node_id>.
+[[nodiscard]] inline std::string channelPathForNode(std::uint32_t nodeId)
+{
+    return "/dev/" + std::string{DaemonName} + "-" + std::to_string(nodeId);
+}
+
+}  // namespace fsdaemon::name

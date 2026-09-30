@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# .clang-format
+# Google C++ style with this project's rules, for clang-format 18.
+
+# [Base settings]
+Language:        Cpp
+BasedOnStyle: Google        # Start from Google style
+
+AccessModifierOffset: -4    # public/private/protected sit 4 columns left of the members
+IndentWidth: 4              # Indent by 4 columns
+TabWidth: 4                 # A tab is 4 columns wide
+UseTab: Never               # Spaces, never tabs
+
+BreakBeforeBraces: Allman   # Allman braces: every opening brace on its own line
+
+ColumnLimit: 0              # No limit, so the formatter never re-wraps a line. The guide's limit is 140.
+
+# [Code style and formatting]
+AllowShortIfStatementsOnASingleLine: false      # No one-line if
+AllowShortLoopsOnASingleLine: false             # No one-line for/while
+AllowShortFunctionsOnASingleLine: None          # No one-line functions
+AllowShortBlocksOnASingleLine : Never           # No one-line blocks
+AllowShortCaseLabelsOnASingleLine: false        # No one-line case labels
+AllowShortEnumsOnASingleLine : false            # No one-line enums
+AllowShortLambdasOnASingleLine: None            # No one-line lambdas
+PackConstructorInitializers: Never              # One constructor initializer per line
+
+SpacesInParentheses: false                   # No space inside parentheses
+SpaceAfterCStyleCast: false                  # No space after a C-style cast
+SpaceBeforeParens: ControlStatements         # A space before ( only after if, for, while and switch
+DerivePointerAlignment: false                # Apply PointerAlignment everywhere instead of guessing it per file
+PointerAlignment: Left                       # The * sits with the type: int* value
+InsertBraces: true                           # Add braces even around a one-statement body

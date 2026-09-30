@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# @FS_NAME@ channel device — chown to dedicated helper uid/gid, 0600 perm.
+# Applied automatically by udev when @FS_NAME@.ko registers the miscdevice;
+# install.sh substitutes the actual user/group at install time.
+KERNEL=="@DAEMON_NAME@-*", OWNER="@HELPER_USER@", GROUP="@HELPER_GROUP@", MODE="0600"

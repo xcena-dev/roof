@@ -1,0 +1,268 @@
+# SPDX-License-Identifier: Apache-2.0
+# clang-tidy policy -- the team Coding Style, expressed as checks.
+#
+# .clang-format decides how code looks. This file decides what code may say. clang-tidy is
+# not part of the build: it runs only when invoked.
+#
+#   clang-tidy -p build --quiet $(find src tests -name '*.cpp' | grep -v rdma_lock)
+#   add --fix to apply, then re-run clang-format (the fixer appends, it does not sort)
+#
+# Every entry below traces to a rule on the Coding Style page. Rules the tool cannot express
+# are listed at the bottom, so what is missing is visible rather than assumed covered.
+
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  -performance-enum-size,
+  misc-const-correctness,
+  misc-include-cleaner,
+  readability-identifier-naming,
+  readability-identifier-length,
+  readability-function-size,
+  readability-function-cognitive-complexity,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  -modernize-deprecated-headers,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-macro-usage,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-prefer-member-initializer,
+  google-readability-casting,
+  google-build-using-namespace,
+  google-runtime-int,
+  -bugprone-easily-swappable-parameters,
+
+# Five checks are deliberately absent from the list above.
+#
+# modernize-use-trailing-return-type: it asks for `auto f() -> T` at 595 sites, which is every
+# function in the tree. The style page writes the return type first, so adopting this would
+# reverse the house style rather than modernise it.
+#
+# modernize-avoid-c-arrays: about half its 57 sites are the arrays inside a region-resident
+# record -- activeDomains, packedBitmaps, reserved, name. Those spell an on-media layout that
+# another host and another build read, so their declaration is a wire contract rather than a
+# container choice. The check cannot tell those from a local `char buf[96]`, and enabling it
+# would force both.
+#
+# performance-enum-size: an enum here can be the type behind a region-resident field, and a
+# region is read by another host and another build. Narrowing one is an on-wire layout change
+# wearing the costume of a local optimisation.
+#
+# modernize-deprecated-headers: it maps signal.h to csignal, but csignal promises only signal,
+# raise, sig_atomic_t and the six ISO C signals. kill and SIGKILL are POSIX and live in signal.h,
+# so taking this check's advice leaves the call compiling on glibc pulling signal.h in behind
+# csignal rather than on any guarantee. misc-include-cleaner asks for the header that actually
+# declares the symbol, and the two cannot both be satisfied. This tree keeps signal.h.
+#
+# readability-magic-numbers: it fires on every literal outside its exempt list, and the line
+# between a magic number and a stated quantity is semantic, not syntactic. A test that says
+# 4 peers over 2 domains is specifying the scenario; naming those adds a hop without adding
+# information. The style page already draws the line by judgement ("0, 1 and other
+# self-evident values"), which no regex reproduces.
+
+# Headers carry implementation here (geometry.hpp, the layout headers, the test harness), so
+# without this they would go unanalysed: clang-tidy drops header diagnostics by default.
+HeaderFilterRegex: '(src|tests)/.*\.hpp$'
+
+# Nothing fails a build yet. Promote a check here once its count reaches zero, so the gate
+# only ever guards ground already held.
+WarningsAsErrors: ''
+
+CheckOptions:
+  # ── Name length ───────────────────────────────────────────────────────────
+  # Three characters minimum everywhere, loop counters included. The check's own default lets a
+  # loop counter be two, which would keep `i` out but wave `it` through; one rule is easier to
+  # state than two. A name below the floor is a name that says nothing to the next reader.
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: 3
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: 3
+  - key: readability-identifier-length.MinimumLoopCounterNameLength
+    value: 3
+  - key: readability-identifier-length.MinimumExceptionNameLength
+    value: 3
+
+  # ── Naming ────────────────────────────────────────────────────────────────
+  # Classes and structs are PascalCase, and every struct carries a _t suffix.
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructSuffix
+    value: '_t'
+  # _t means a record, a struct whose fields are the point. Impl is the type a header refuses to
+  # show, and the other three are mask types standing in for an enum class that cannot hold a mask.
+  - key: readability-identifier-naming.StructIgnoredRegexp
+    value: '^(Impl|EpollFlag|ConnectionEvents|Permission)$'
+  - key: readability-identifier-naming.UnionCase
+    value: CamelCase
+  - key: readability-identifier-naming.UnionSuffix
+    value: '_t'
+
+  # An enum class is PascalCase and carries no suffix. Enumerators are constants, so they
+  # follow the constant rule rather than the variable one.
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
+
+  # Variables are camelCase nouns. A const local stays camelCase: the style page's own
+  # example writes `const uint32_t dataSize`, so only compile-time constants go PascalCase.
+  - key: readability-identifier-naming.VariableCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalConstantCase
+    value: camelBack
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+
+  # Constants and enumerators are PascalCase. constexpr and static const are the ones the
+  # rule means by "constant": a value fixed before the program runs.
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassConstantCase
+    value: CamelCase
+
+  # A private member variable carries a trailing underscore; a public one carries none.
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.PublicMemberCase
+    value: camelBack
+
+  # A static data member is a member too, so the suffix above reaches it rather than the g_ prefix
+  # a namespace-scope variable takes.
+  - key: readability-identifier-naming.ClassMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.ClassMemberSuffix
+    value: '_'
+
+  # Functions are camelCase verbs.
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.MethodCase
+    value: camelBack
+
+  # A global variable carries a g_ prefix over a camelCase name.
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.GlobalVariablePrefix
+    value: 'g_'
+
+  # A macro is upper snake_case. _Static_assert is the exception because C11 chose the spelling and
+  # the shared kernel headers write it, so a C++ caller has to define that name to compile them.
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^_Static_assert$'
+
+  # Same name, same reason: the reserved identifier is the C standard's, not one this tree invented.
+  - key: bugprone-reserved-identifier.AllowedIdentifiers
+    value: '_Static_assert'
+
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  # A type alias names a type, so it is PascalCase: the style page writes `using CsrPtr = ...`.
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+
+  # A lone type parameter is T; two or more carry a T_ prefix over a PascalCase name. The
+  # ignore pattern is what lets bare T through, since one rule cannot state both forms.
+  - key: readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeTemplateParameterPrefix
+    value: 'T_'
+  - key: readability-identifier-naming.TypeTemplateParameterIgnoredRegexp
+    value: '^(T|Rep|Period)$'
+  # Names that mirror the standard library keep its spelling, because that is what makes them
+  # work: `iterator` has to be lowercase for range-for and the std algorithms to bind, Rep and
+  # Period are std::chrono::duration's own parameter names, and a trait-shaped constant reads
+  # as std::is_*_v does.
+  - key: readability-identifier-naming.ClassIgnoredRegexp
+    value: '^(iterator|const_iterator)$'
+  - key: readability-identifier-naming.TypeAliasIgnoredRegexp
+    value: '^(nanoseconds|iterator|const_iterator)$'
+  - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
+    value: '^is[A-Z]\w*$'
+  - key: readability-identifier-naming.GlobalConstantIgnoredRegexp
+    value: '^is[A-Z]\w*$'
+
+  # A non-type template parameter is camelCase.
+  - key: readability-identifier-naming.ValueTemplateParameterCase
+    value: camelBack
+
+  # ── Function design ───────────────────────────────────────────────────────
+  # 200 lines, 5 levels of nesting, 5 parameters. Past the last one, the style page asks for
+  # a struct instead.
+  - key: readability-function-size.LineThreshold
+    value: 200
+  - key: readability-function-size.NestingThreshold
+    value: 5
+  - key: readability-function-size.ParameterThreshold
+    value: 5
+
+  # The style page asks for cyclomatic complexity <= 10. clang-tidy has no cyclomatic check,
+  # and cognitive complexity counts differently: nesting costs more, a flat switch costs less.
+  # So 10 does not carry over. This keeps the check's own default until the team picks a
+  # number against real output.
+  - key: readability-function-cognitive-complexity.Threshold
+    value: 25
+
+  # ── Macros ────────────────────────────────────────────────────────────────
+  # The style page bans macros except where one is needed, and requires a project prefix on
+  # the ones that are. This is that rule: CME_ and OBSERVE_ pass, everything else is flagged.
+  # Two idioms in src/observe need them. An X-macro expands one stage list into both an enum
+  # and its name table, and #name has no function equivalent. An instrumentation macro that
+  # compiles to ((void)0) drops its arguments unevaluated, which a function cannot do.
+  - key: cppcoreguidelines-macro-usage.AllowedRegexp
+    value: '^(CME_|OBSERVE_)'
+
+  # ── Deliberate discards ───────────────────────────────────────────────────
+  # static_cast<void>(f()) is how C++ says "the answer is dropped on purpose", and it is what
+  # the compiler's own -Wunused-result accepts. Without this the check keeps flagging the
+  # sites that already say so, which leaves no way to write the intent down.
+  - key: bugprone-unused-return-value.AllowCastToVoid
+    value: true
+
+  # ── Swallowed exceptions ──────────────────────────────────────────────────
+  # A catch that does nothing is usually a bug, but not always: a lock loop under contention
+  # takes LockTimeoutError as a normal outcome. @expected marks the ones that are deliberate,
+  # so the check keeps flagging the rest.
+  - key: bugprone-empty-catch.IgnoreCatchWithKeywords
+    value: '@TODO;@FIXME;@expected'
+
+  # ── Include hygiene ───────────────────────────────────────────────────────
+  # This is what enforces "include what you use" and "do not lean on transitive includes".
+  #
+  # IgnoreHeaders keeps the fixer out of glibc internals. Left alone it decides getopt_long
+  # comes from <bits/getopt_core.h> and includes that directly, which breaks the build twice
+  # over: the header is not meant to be included on its own, and it lands ahead of the
+  # features.h that defines __BEGIN_DECLS. The cost is three false "unused <getopt.h>"
+  # reports, because ignoring the bits header leaves getopt_long with no attributed source.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: 'bits/.*;asm/.*;asm-generic/.*;linux/.*;sys/ucontext.h'
+
+# ── What this file cannot enforce ────────────────────────────────────────────
+# clang-tidy has no check for these, so they stay a review matter:
+#   - access specifier order (public -> protected -> private) and member ordering in a class
+#   - .cpp function order matching the .hpp declaration order
+#   - file names in lower case with underscores
+#   - structured bindings limited to two fields
+#   - operator overloading only where the meaning is obvious
+#   - class names carrying no _t suffix (the naming check states required suffixes, not
+#     forbidden ones)
+#   - brace init over (), beyond what cppcoreguidelines-init-variables catches

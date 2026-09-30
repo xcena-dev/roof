@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you refer to ROOF, please cite it as below."
+title: "ROOF: Region Ownership Over Fabric"
+type: software
+abstract: >-
+  A multi-node filesystem for fabric-attached memory, with cross-node identity and access control.
+authors:
+  - family-names: Park
+    given-names: Moonchan
+    affiliation: "XCENA Inc."
+    orcid: "https://orcid.org/0000-0001-5075-7114"
+version: 0.1.0
+date-released: "2026-10-02"
+license:
+  - Apache-2.0
+  - GPL-2.0-only
+repository-code: "https://github.com/xcena-dev/roof"
+keywords:
+  - CXL
+  - fabric-attached memory
+  - filesystem
+  - access control
+  - Linux kernel module

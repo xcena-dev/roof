@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a change to the filesystem, the daemon, the library, the tools, or the docs.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What you were trying to do, and where ROOF got in the way. Describing the situation
+        rather than the fix keeps the fix open.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. A problem with no proposed fix is still worth filing.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Does it reach the medium, the upcalls, or the permission model
+      description: >-
+        Any of the three means docs/design.md changes with it, which makes this a larger piece of
+        work than it may look.
+      options:
+        - label: It changes the layout in fabric-attached memory, the upcall protocol, or the permission model.
+        - label: "No, it is above those. The library, the tools, or the docs."

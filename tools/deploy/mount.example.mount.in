@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# mnt-@FS_NAME@.example.mount -- one @FS_NAME@ mount, and the only privileged step in the setup.
+#
+# The unit file name has to encode the mount point: systemd derives one from the other, so this
+# copy mounts /mnt/@FS_NAME@ and a second mount point needs its own file named after it.
+#
+#   systemctl start mnt-@FS_NAME@.mount
+#
+# Three operations here need CAP_SYS_ADMIN and no permission bit substitutes: loading the module,
+# mount(2), and the claim ioctl that writes the bootstrap slot table. They are held in this unit so
+# that nothing else on the host has to be privileged.
+
+[Unit]
+Description=@FS_NAME@ on /mnt/@FS_NAME@
+Requires=modprobe@@FS_NAME@.service
+After=modprobe@@FS_NAME@.service
+
+[Mount]
+What=none
+Where=/mnt/@FS_NAME@
+Type=@FS_NAME@
+
+# daemon_config is the only option mount.@FS_NAME@ keeps for itself; it is stripped before mount(2), so
+# the kernel sees nothing it does not know. Everything else here reaches the kernel untouched.
+#
+# daemon_uid= and daemon_gid= bind the lock region to this node's daemon account. The helper
+# resolves them from the account's own passwd entry and adds them here, so they carry no value of
+# their own on this line.
+Options=daxdev=/dev/dax0.0,daemon_config=/etc/@FS_NAME@/daemon.yaml
+
+# The helper starts this node's daemon through systemctl, so it never inherits this unit's
+# privilege, which is the one thing this layout is avoiding. The unit it starts is named after the
+# node id the kernel picks inside mount(2), so nothing here has to know it.
+#
+# Stopping the daemon before the unmount is umount.@FS_NAME@'s job, not a directive here: a [Mount]
+# section has no ExecStop=, and the daemon cannot be ordered against this unit either, since the
+# helper waits for it to greet the kernel from inside the mount.
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

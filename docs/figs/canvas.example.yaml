@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Where the excalidraw canvas server answers (example). Copy to canvas.yaml and
+# fill in the address of the machine running it.
+#
+# The server binds one address at a time, and a second one started on loopback
+# holds a scene of its own, so the browser and the MCP server must name the same
+# host here and in EXPRESS_SERVER_URL.
+
+host: 127.0.0.1
+port: 3000

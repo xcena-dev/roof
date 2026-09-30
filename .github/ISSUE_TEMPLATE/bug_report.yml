@@ -1,0 +1,42 @@
+name: Bug report
+description: Something behaves differently from what the docs or the design say.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you saw instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: A test case name from tests/, or the commands. Shortest you have.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: >-
+        Kernel version, the CXL device, how many nodes mount it, and the daemon's identity and
+        policy backends. These decide most behaviour here, so a report without them often cannot
+        be reproduced.
+      placeholder: "6.8 kernel, one devdax device, 2 mounts, local identity, local policy"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and output
+      description: >-
+        The module's lines in dmesg, the daemon's journal, and your install.sh line. Intermittent
+        is worth reporting too; say so rather than waiting for a clean reproduction.
+      render: shell

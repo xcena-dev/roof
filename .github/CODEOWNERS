@@ -1,0 +1,7 @@
+# Default reviewer for every path. GitHub requests a review from the owner on each pull
+# request, except one the owner opened: nobody reviews their own.
+#
+# The main ruleset leaves require_code_owner_review off, so this requests a review rather
+# than mandating one. The approval it does require can come from any account with write
+# access to this repository.
+* @moonchan-park

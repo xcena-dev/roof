@@ -1,0 +1,36 @@
+/* SPDX-License-Identifier: Apache-2.0 WITH Linux-syscall-note */
+/*
+ * tools_uapi.h - kernel interface for the filesystem's own tools.
+ *
+ * Not for applications: uapi.h is what they get. What is here belongs to the
+ * mount helper, which finishes a bring-up the kernel cannot finish alone.
+ */
+
+#ifndef _@FS_PREFIX_UPPER@_TOOLS_UAPI_H
+#define _@FS_PREFIX_UPPER@_TOOLS_UAPI_H
+
+#include <linux/types.h>
+
+/*
+ * The lock region format creates. The daemon that serialises nodes maps this
+ * area, so the kernel and the tools have to agree on the name.
+ *
+ * It lives at a fixed RAT id and outside the hash index, so lookup resolves the
+ * name directly and no create ever hands that id out.
+ */
+/* Dot-prefixed so a plain listing does not count it: every tool that counts the
+ * files in a mount would otherwise be one out. */
+#define @FS_PREFIX_UPPER@_LOCK_REGION_NAME ".cmed.region"
+#define @FS_PREFIX_UPPER@_LOCK_REGION_RAT_ID 0u
+#define @FS_PREFIX_UPPER@_LOCK_REGION_NAME_LEN (sizeof(@FS_PREFIX_UPPER@_LOCK_REGION_NAME) - 1)
+
+/*
+ * The domain nodes serialise metadata through. create, unlink and ftruncate all
+ * touch the RAT and the physical extent map, so one domain covers the three.
+ */
+#define @FS_PREFIX_UPPER@_LOCK_DOMAIN_NAME "@FS_NAME@.meta"
+
+/* Leaves the field beside it deciding. Not zero, which is root and gid 0. */
+#define @FS_PREFIX_UPPER@_TOOLS_ANY_ID ((__u32)~0U)
+
+#endif /* _@FS_PREFIX_UPPER@_TOOLS_UAPI_H */

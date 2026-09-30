@@ -1,0 +1,24 @@
+# Logs
+*.log
+
+# Per-site facts: device paths, mounts, sweep hosts. Template is tracked as
+# config.example.yaml; the filled-in copy describes one machine only.
+userlib/cme/config.yaml
+
+# Built helpers, when the tools project is configured in place. Each is named after the
+# filesystem, so the pattern is what a rename survives.
+tools/mount.*
+tools/umount.*
+
+# Personal, per-clone ignores (untracked; wired via core.excludesFile)
+.gitignore.local
+
+build/
+
+# Rendered from the templates beside them. Each .h.in has a .h, and check.sh proves the pair
+# still agrees.
+kernel/include/*.h
+build-*/
+
+# Rendered from name.py.in beside it.
+daemon/src/fsdaemon/name.py

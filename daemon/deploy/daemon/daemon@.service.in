@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=@FS_NAME@ authorization daemon for node %i
+Wants=spire-agent.service
+# Ordering only, and no Wants=: a host serving the file-driven backends carries neither unit, and a
+# decision whose backend is not up yet is refused rather than waited on.
+After=spire-agent.service opa.service
+ConditionPathExists=/dev/@DAEMON_NAME@-%i
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/@DAEMON_NAME@ --config /etc/@FS_NAME@/daemon.yaml --node-id %i
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+KillMode=mixed
+
+# Dedicated unprivileged user. @FS_NAME@.ko's opener binding records this uid
+# at the first open() of the channel; any other uid (including root) is rejected
+# by daemon_check_opener for as long as that channel is held.
+User=@FS_NAME@
+Group=@FS_NAME@
+
+NoNewPrivileges=true
+
+# The config, the identity rules and the policy open to this account and to root alone, so the
+# daemon reads them where they are and a SIGHUP picks up an edit.
+
+ProtectSystem=strict
+# A path or sha256 rule is confirmed against the binary itself, wherever the rule names it, so the
+# daemon reads homes and writes none of them.
+ProtectHome=read-only
+PrivateTmp=true
+# /run is a tmpfs, so this directory is gone after every boot. Naming it in ReadWritePaths= alone
+# made systemd refuse the namespace with 226 rather than create it.
+RuntimeDirectory=@FS_NAME@
+# Shared by every instance, so stopping one must not take the directory the others read from.
+RuntimeDirectoryPreserve=yes
+ReadOnlyPaths=-/run/spire
+# The policy server's endpoint gets no path exception of its own. Connecting to a pathname socket
+# writes nothing there, and a bind mount would hold the directory its unit replaces on a restart.
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+ProcSubset=pid
+
+# PrivateNetwork=false: the host loopback, for a deployment that puts its policy server on a port.
+# The socket the shipped config names needs none of it (PrivateNetwork=true gives an empty netns).
+PrivateNetwork=false
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1/128
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+# All caps dropped — helper runs as unprivileged @FS_NAME@ uid; channel access
+# gated by the channel's file perm (0600 @FS_NAME@:@FS_NAME@) + @FS_NAME@.ko's
+# opener uid binding.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
+RemoveIPC=true
+UMask=0077
+
+DeviceAllow=/dev/@DAEMON_NAME@-%i rw
+DevicePolicy=closed
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,116 @@
+/* SPDX-License-Identifier: Apache-2.0 WITH Linux-syscall-note */
+/*
+ * uapi.h - what an application gets: ioctl structures, commands and constants.
+ *
+ * Generated from uapi.h.in, so the names here carry the filesystem's own.
+ */
+
+#ifndef _@FS_PREFIX_UPPER@_UAPI_H
+#define _@FS_PREFIX_UPPER@_UAPI_H
+
+#ifdef __KERNEL__
+#include <linux/types.h>
+#include <linux/ioctl.h>
+#else
+#include <stdint.h>
+#include <linux/types.h>
+#include <sys/ioctl.h>
+#endif
+
+/* ── Constants ─────────────────────────────────────────────────────── */
+
+enum @FS_PREFIX@_constants {
+	@FS_PREFIX_UPPER@_MAX_NODE_ID = 8,
+	@FS_PREFIX_UPPER@_NAME_MAX = 63,
+	@FS_PREFIX_UPPER@_DELEG_MAX = 29, /* Max delegation entries per region */
+};
+
+/* Permission bitmask */
+enum @FS_PREFIX@_perm {
+	@FS_PREFIX_UPPER@_PERM_READ = 0x0001, /* read() and mmap(PROT_READ) */
+	@FS_PREFIX_UPPER@_PERM_WRITE = 0x0002, /* mmap(PROT_WRITE), page_mkwrite */
+	@FS_PREFIX_UPPER@_PERM_DELETE = 0x0004, /* unlink */
+	@FS_PREFIX_UPPER@_PERM_ADMIN = 0x0008, /* perm_set_default (ownership control) */
+	@FS_PREFIX_UPPER@_PERM_IOCTL = 0x0010, /* ioctls with no dedicated permission bit */
+	@FS_PREFIX_UPPER@_PERM_GRANT = 0x0020, /* grant an account on this node (auth proxy) */
+	@FS_PREFIX_UPPER@_PERM_ALL = 0x003F,
+};
+
+/* Leaves the field beside it deciding. Not zero, which is root and gid 0. */
+#define @FS_PREFIX_UPPER@_PERM_ANY_ID ((__u32)~0U)
+
+/* ── ioctl structures ──────────────────────────────────────────────── */
+
+/*
+ * Permission delegation ioctl.
+ *
+ * An account and not a process: uid and gid are what an owner can name and mean, where a pid on
+ * another host is neither knowable nor verifiable from here. A row naming a process is written by
+ * the helper upcall alone, which resolves the caller it already has.
+ *
+ * Either field alone is enough, and @FS_PREFIX_UPPER@_PERM_ANY_ID in one leaves the other to
+ * decide. The row lands on the node the call is made from.
+ *
+ * @FS_PREFIX_UPPER@_IOC_PERM_SET_DEFAULT takes the same record and reads @perms alone.
+ * @FS_PREFIX_UPPER@_IOC_PERM_REVOKE takes it too and reads @perms not at all: @uid and @gid name
+ * the account whose rows come off, its own and the upcall-written rows of its processes, and a
+ * mapping already standing is left as it is. Only a @uid naming the caller makes that a giving up
+ * that asks for nothing, since a gid alone names a group and taking from others wants ADMIN.
+ *
+ * A @gid reaches a process row by the groups its holder carries now, since the row itself holds
+ * only the one gid that holder ran under and no supplementary one.
+ */
+struct @FS_PREFIX@_perm_req {
+	__u32 uid; /* Target uid, or @FS_PREFIX_UPPER@_PERM_ANY_ID */
+	__u32 gid; /* Target gid, or @FS_PREFIX_UPPER@_PERM_ANY_ID */
+	__u32 perms; /* Permission bitmask (@FS_PREFIX_UPPER@_PERM_*) */
+	__u32 reserved;
+};
+/* Spelled per language, because a C++ consumer of this header is a real one:
+ * the mount helper links the daemon's client. */
+#ifdef __cplusplus
+static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 16,
+	      "@FS_PREFIX@_perm_req ioctl ABI: expected 16 bytes");
+#else
+_Static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 16,
+	       "@FS_PREFIX@_perm_req ioctl ABI: expected 16 bytes");
+#endif
+
+/*
+ * How a region's bytes are cached. It follows where the region sits, so ftruncate fixes it.
+ *
+ * @FS_PREFIX_UPPER@_CACHE_UNCACHED maps with no struct pages behind it, so nothing can pin it for
+ * DMA, and in exchange a peer reads a write without the writer flushing.
+ * @FS_PREFIX_UPPER@_CACHE_WRITEBACK is the default and the one a GPU registration needs.
+ */
+enum @FS_PREFIX@_cache_policy {
+	@FS_PREFIX_UPPER@_CACHE_WRITEBACK = 0,
+	@FS_PREFIX_UPPER@_CACHE_UNCACHED = 1,
+};
+
+struct @FS_PREFIX@_cache_req {
+	__u32 policy; /* enum @FS_PREFIX@_cache_policy */
+	__u32 reserved;
+};
+#ifdef __cplusplus
+static_assert(sizeof(struct @FS_PREFIX@_cache_req) == 8,
+	      "@FS_PREFIX@_cache_req ioctl ABI: expected 8 bytes");
+#else
+_Static_assert(sizeof(struct @FS_PREFIX@_cache_req) == 8,
+	       "@FS_PREFIX@_cache_req ioctl ABI: expected 8 bytes");
+#endif
+
+/* ── ioctl commands ────────────────────────────────────────────────── */
+
+/* Permission delegation */
+#define @FS_PREFIX_UPPER@_IOC_PERM_GRANT _IOW('X', 10, struct @FS_PREFIX@_perm_req)
+#define @FS_PREFIX_UPPER@_IOC_PERM_SET_DEFAULT _IOW('X', 11, struct @FS_PREFIX@_perm_req)
+#define @FS_PREFIX_UPPER@_IOC_PERM_REVOKE _IOW('X', 12, struct @FS_PREFIX@_perm_req)
+#define @FS_PREFIX_UPPER@_IOC_PERM_ASK _IOW('X', 15, struct @FS_PREFIX@_perm_req)
+
+/* Cache policy. SET answers -EBUSY once the region is placed, since another pool means other
+ * bytes. GET reports where the region landed, or what SET asked for while it has none. */
+#define @FS_PREFIX_UPPER@_IOC_CACHE_SET _IOW('X', 13, struct @FS_PREFIX@_cache_req)
+#define @FS_PREFIX_UPPER@_IOC_CACHE_GET _IOR('X', 14, struct @FS_PREFIX@_cache_req)
+
+#endif /* _@FS_PREFIX_UPPER@_UAPI_H */

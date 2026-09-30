@@ -1,0 +1,182 @@
+/* SPDX-License-Identifier: Apache-2.0 WITH Linux-syscall-note */
+/*
+ * daemon_uapi.h — wire format for kernel ↔ /dev/@DAEMON_NAME@-<node> helper.
+ *
+ * The module and the daemon both compile against the header rendered from this template, so a
+ * changed struct reaches both sides in one build.
+ */
+
+#ifndef _@FS_PREFIX_UPPER@_DAEMON_UAPI_H
+#define _@FS_PREFIX_UPPER@_DAEMON_UAPI_H
+
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <stdint.h>
+#include <linux/types.h>
+#endif
+
+/* Message types */
+enum @FS_PREFIX@_daemon_msg_type {
+	@FS_PREFIX_UPPER@_DAEMON_MSG_HELLO = 1, /* helper → kernel */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_ACCESS_REQUEST = 2, /* kernel → helper */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_ACCESS_RESPONSE = 3, /* helper → kernel */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_ATTEST_REQUEST = 4, /* kernel → helper */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_ATTEST_RESPONSE = 5, /* helper → kernel */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_LOCK_REQUEST = 6, /* kernel → helper */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_LOCK_RESPONSE = 7, /* helper → kernel */
+	@FS_PREFIX_UPPER@_DAEMON_MSG_UNLOCK_REQUEST = 8, /* kernel → helper, no response */
+};
+
+enum @FS_PREFIX@_daemon_config {
+	/* ASCII 'A','U','T','H' read little-endian. */
+	@FS_PREFIX_UPPER@_DAEMON_MAGIC = 0x48545541,
+
+	/* The kernel accepts version v iff MIN ≤ v ≤ MAX, so widening the window is what lets a
+	 * transitional kernel talk to both helpers. */
+	@FS_PREFIX_UPPER@_DAEMON_PROTOCOL_VERSION = 1,
+	@FS_PREFIX_UPPER@_DAEMON_PROTOCOL_MIN = 1,
+	@FS_PREFIX_UPPER@_DAEMON_PROTOCOL_MAX = 1,
+
+	@FS_PREFIX_UPPER@_DAEMON_QUEUE_MAX = 256,
+	@FS_PREFIX_UPPER@_DAEMON_DEFAULT_TIMEOUT_MS = 5000,
+	@FS_PREFIX_UPPER@_DAEMON_MAX_TIMEOUT_MS = 60000,
+	/* Under the reply deadline, so the answer arrives while the kernel still waits for it. */
+	@FS_PREFIX_UPPER@_DAEMON_LOCK_MAX_WAIT_MS = 4000,
+
+	/* NUL-padded fixed arrays. A path that does not fit is sent empty and a domain name that
+	 * does not fit is refused, so neither matches on a cut string. */
+	@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN = 16,
+	@FS_PREFIX_UPPER@_DAEMON_PATH_LEN = 192,
+	@FS_PREFIX_UPPER@_DAEMON_DOMAIN_LEN = 16,
+
+	/* Bounds copy_from_user against a buggy or hostile helper. */
+	@FS_PREFIX_UPPER@_DAEMON_MAX_WRITE_BYTES = 64 * 1024,
+	@FS_PREFIX_UPPER@_DAEMON_MAX_PAYLOAD_BYTES = 4 * 1024,
+};
+
+_Static_assert(@FS_PREFIX_UPPER@_DAEMON_LOCK_MAX_WAIT_MS < @FS_PREFIX_UPPER@_DAEMON_DEFAULT_TIMEOUT_MS,
+	       "a lock acquire must finish before the kernel stops waiting for the reply");
+
+/* HELLO handshake. enum constants are `int` in C99, so bit 31 and up need a #define instead. */
+enum @FS_PREFIX@_daemon_cap {
+	@FS_PREFIX_UPPER@_DAEMON_CAP_ATTEST_OWNER = 1 << 0,
+	@FS_PREFIX_UPPER@_DAEMON_CAP_ACCESS_REQUEST = 1 << 1,
+	@FS_PREFIX_UPPER@_DAEMON_CAP_OPA_RESPONSE = 1 << 2,
+	@FS_PREFIX_UPPER@_DAEMON_CAP_REVOKE = 1 << 3,
+	/* The helper holds a peer slot. Without this bit the kernel refuses a lock request rather
+	 * than queueing one nobody will answer. */
+	@FS_PREFIX_UPPER@_DAEMON_CAP_LOCK = 1 << 4,
+};
+
+/* Field order puts __u64 seq at offset 16, aligned even though the struct is packed. Reordering
+ * breaks the wire ABI and the daemon's constants with it. */
+struct @FS_PREFIX@_daemon_hdr {
+	__u32 magic; /* @FS_PREFIX_UPPER@_DAEMON_MAGIC */
+	__u32 version; /* = 1 */
+	__u32 type; /* enum @FS_PREFIX@_daemon_msg_type */
+	__u32 payload_len;
+	__u64 seq; /* request/response matching */
+	__u32 reserved[2];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_hdr) == 32,
+	       "@FS_PREFIX@_daemon_hdr must be exactly 32 bytes on the wire");
+
+struct @FS_PREFIX@_daemon_hello {
+	__u32 protocol_version; /* = 1 */
+	__u32 reserved;
+	__u64 capabilities; /* @FS_PREFIX_UPPER@_DAEMON_CAP_* */
+	__u32 helper_pid; /* informational */
+	__u32 reserved2;
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_hello) == 24,
+	       "@FS_PREFIX@_daemon_hello ABI: expected 24 bytes");
+
+/*
+ * Identity-only PDP: the helper sees the consumer's identity and the owner's, and decides.
+ *
+ * The kernel read every field from the calling task, so it is what that task is rather than what
+ * a later look at /proc would find. That includes the path, because reading /proc/<pid>/exe needs
+ * the ptrace access that also reads the target's memory. The exe inode is what a digest selector
+ * verifies with, since opening the path again could find a different file. Supplementary groups
+ * are absent: NGROUPS_MAX is 65536, so any prefix would be an arbitrary cut.
+ */
+struct @FS_PREFIX@_daemon_access_request {
+	__u32 consumer_pid;
+	__u32 consumer_uid;
+	__u32 consumer_gid;
+	__u64 consumer_start_boottime_ns; /* CLOCK_BOOTTIME ns */
+	__u64 consumer_exe_inode_ino;
+	__u32 consumer_exe_inode_dev; /* huge_encode_dev */
+	char owner_group[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN]; /* from RAT meta */
+	char owner_role[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN];
+	char consumer_exe_path[@FS_PREFIX_UPPER@_DAEMON_PATH_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_access_request) == 256,
+	       "@FS_PREFIX@_daemon_access_request ABI: expected 256 bytes");
+
+/* granted_perms uses the permission bits uapi.h names. */
+struct @FS_PREFIX@_daemon_response {
+	__s32 status; /* 0 = OK, neg errno */
+	__u32 granted_perms; /* valid iff status == 0 */
+	__s64 expiry_secs; /* unix epoch, 0 = no expiry */
+	__u32 reserved[2];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_response) == 24,
+	       "@FS_PREFIX@_daemon_response ABI: expected 24 bytes");
+
+/* The task claiming a region, in the shape the access request carries a consumer, so one rule
+ * matches whichever call reaches the helper. Region and node stay kernel-side. */
+struct @FS_PREFIX@_daemon_attest_request {
+	__u32 owner_pid;
+	__u32 owner_uid;
+	__u32 owner_gid;
+	__u64 owner_start_boottime_ns; /* CLOCK_BOOTTIME ns */
+	__u64 owner_exe_inode_ino;
+	__u32 owner_exe_inode_dev; /* huge_encode_dev */
+	char owner_exe_path[@FS_PREFIX_UPPER@_DAEMON_PATH_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_attest_request) == 224,
+	       "@FS_PREFIX@_daemon_attest_request ABI: expected 224 bytes");
+
+struct @FS_PREFIX@_daemon_attest_response {
+	__s32 status;
+	__u32 reserved;
+	char group[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN];
+	char role[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_attest_response) == 40,
+	       "@FS_PREFIX@_daemon_attest_response ABI: expected 40 bytes");
+
+/* The domains the kernel asks for by name. Both sides read them here, so neither can spell one
+ * the other does not answer. */
+#define @FS_PREFIX_UPPER@_DOMAIN_META "@FS_NAME@.meta"
+_Static_assert(sizeof(@FS_PREFIX_UPPER@_DOMAIN_META) <= @FS_PREFIX_UPPER@_DAEMON_DOMAIN_LEN,
+	       "a domain name must fit the wire field with its NUL");
+
+/* A lock the kernel cannot take itself: the region's turn is served by a peer and a kthread
+ * cannot be one. The name is opaque to the helper, so contending mounts must compute the same. */
+struct @FS_PREFIX@_daemon_lock_request {
+	char domain[@FS_PREFIX_UPPER@_DAEMON_DOMAIN_LEN];
+	__u32 timeout_ms; /* bounds the helper's acquire; 0 asks for the cap */
+	__u32 reserved;
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_lock_request) == 24,
+	       "@FS_PREFIX@_daemon_lock_request ABI: expected 24 bytes");
+
+/* Not answered: the helper serves frames in order, so the kernel moves on as soon as this is queued
+ * and a later LOCK still finds the domain released. One for a domain not held is not an error. */
+struct @FS_PREFIX@_daemon_unlock_request {
+	char domain[@FS_PREFIX_UPPER@_DAEMON_DOMAIN_LEN];
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_unlock_request) == 16,
+	       "@FS_PREFIX@_daemon_unlock_request ABI: expected 16 bytes");
+
+struct @FS_PREFIX@_daemon_lock_response {
+	__s32 status; /* 0 = OK, neg errno */
+	__u32 reserved;
+} __attribute__((packed));
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_lock_response) == 8,
+	       "@FS_PREFIX@_daemon_lock_response ABI: expected 8 bytes");
+
+#endif /* _@FS_PREFIX_UPPER@_DAEMON_UAPI_H */

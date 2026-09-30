@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# The names this tree builds under. make includes this file and sh sources it, so the syntax has
+# to stay valid in both.
+# The filesystem: kernel module, fs type, mount helper, /etc and /run paths, service account.
+FS_NAME=rooffs
+# The helper daemon: its binary, its systemd unit, and the channel device each mount registers.
+DAEMON_NAME=roofd
+# The userspace library: its archive, pkg-config file, include directory and published namespace.
+LIB_NAME=roof

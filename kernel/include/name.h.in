@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: Apache-2.0 WITH Linux-syscall-note */
+/*
+ * name.h - the names this tree was built under, for the paths and the environment carrying them.
+ *
+ * The macros are neutral and only their values are rendered, so a source that spells one is not
+ * spelling the filesystem. Kernel code has KBUILD_MODNAME and FS_DAEMON_NAME from kbuild for the
+ * same purpose and does not need this header.
+ */
+
+#ifndef _FS_NAME_H
+#define _FS_NAME_H
+
+#define FS_NAME_STR "@FS_NAME@"
+#define FS_NAME_UPPER_STR "@FS_UPPER@"
+#define DAEMON_NAME_STR "@DAEMON_NAME@"
+
+#endif /* _FS_NAME_H */

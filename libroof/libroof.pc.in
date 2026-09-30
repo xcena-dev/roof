@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: lib@LIB_NAME@
+Description: File verbs on a mount, with descriptors that close themselves
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -l@LIB_NAME@
+Cflags: -I${includedir}

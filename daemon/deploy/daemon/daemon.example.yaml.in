@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+# The daemon's runtime config (example). install.sh renders and plants it.
+
+# One helper per mount. The unit passes --node-id, so this file is the same on every node of a
+# host; channel_path only overrides the channel that id would name.
+# node_id: 1
+# channel_path: /dev/@DAEMON_NAME@-1
+
+# Backend selectors. Both are file-driven here, needing neither SPIRE nor OPA, which is what a
+# host that has only this daemon can serve. Switch to the pair below once those are deployed:
+# picking one of them without its service turns every attest into a failure, and the mount then
+# answers -EAGAIN to every create.
+backends:
+  identity: local
+  policy:   local
+  # identity: spire
+  # policy:   opa
+
+# Used only when backends.identity == 'local'. A bare filename resolves next to this config file.
+identity_rules_path: identity-rules.yaml
+# Allowed selector kinds. Valid values: uid, gid, supplementary_gid, path, sha256.
+# Rules using a disallowed kind are dropped at load with a loud error.
+#
+# path is on by default and costs one stat(2) per attest once a rule names one. It is what separates
+# two binaries under the same account, so a process that execs into another one stops matching, and
+# the name has to resolve to the inode the kernel read.
+selectors: [uid, path]
+
+# Used only when backends.policy == 'local'. Bare filename, same reasoning as identity_rules_path.
+policy_path: policy.rego
+# The package the decision object lives in. It has to name the package the policy file declares,
+# or every access request is refused.
+policy_query: @FS_NAME@.authz
+
+# Used only when backends.identity == 'spire':
+# Delegated Identity API lives on the SPIRE Agent's admin socket
+# (admin_socket_path in agent.conf), NOT the public workload socket.
+spire_workload_api_socket: /run/spire-agent/admin/api.sock
+
+# Used only when backends.policy == 'opa':
+# policy_socket is where the request goes, so the host in policy_url only fills the Host header.
+# A path under /run and not a loopback port, because /run is root's and a port above 1024 is any
+# account's to hold first, with nothing in the exchange to tell the real server from that one.
+# Emptying policy_socket puts the request back on the port policy_url names.
+policy_url:      http://localhost/v1/data/@FS_NAME@/authz
+policy_socket:   /run/@FS_NAME@-opa/api.sock
+
+audit:
+  target: stdout
+  log_decisions: true
+
+upcall:
+  request_timeout: 4s
+  # Times each stage of an answer and reports means every 200 answers, on stderr. Off means no
+  # clock is read on the serving path, so leave it off unless a number is wanted.
+  trace_turns: false
+  # Threads that answer off the serve loop, used only when a backend waits on a socket: identity
+  # spire or policy opa. The file-driven pair is answered on the loop and needs none of these.
+  workers: 4
