@@ -9,22 +9,21 @@ ConditionPathExists=/dev/@DAEMON_NAME@-%i
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/@DAEMON_NAME@ --config /etc/@FS_NAME@/daemon.yaml --node-id %i
+ExecStart=/usr/local/bin/@DAEMON_NAME@ --config /etc/@FS_NAME@/config.yaml --node-id %i
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=5s
 KillMode=mixed
 
-# Dedicated unprivileged user. @FS_NAME@.ko's opener binding records this uid
-# at the first open() of the channel; any other uid (including root) is rejected
-# by daemon_check_opener for as long as that channel is held.
-User=@FS_NAME@
-Group=@FS_NAME@
+# accounts.daemon from the config. @FS_NAME@.ko's opener binding records this uid at the first
+# open() of the channel, and any other uid (including root) is rejected while that channel is held.
+User=@DAEMON_USER@
+Group=@DAEMON_GROUP@
 
 NoNewPrivileges=true
 
-# The config, the identity rules and the policy open to this account and to root alone, so the
-# daemon reads them where they are and a SIGHUP picks up an edit.
+# The config and the policy open to this account and to root alone, so the daemon reads them where
+# they are and a SIGHUP picks up an edit.
 
 ProtectSystem=strict
 # A path or sha256 rule is confirmed against the binary itself, wherever the rule names it, so the

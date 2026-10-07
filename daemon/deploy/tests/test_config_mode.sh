@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# test_config_mode -- who can read the daemon's config, its identity rules and its policy.
+# test_config_mode -- who can read the daemon's config and its policy.
 #
-# The daemon reads the three files under /etc itself, so each is owned by the daemon's own account
-# at mode 0400 with root as its group. What keeps them shut is no group bit, no world bit and no ACL
+# The daemon reads both files under /etc itself, so each is owned by the daemon's own account at
+# mode 0400 with root as its group. What keeps them shut is no group bit, no world bit and no ACL
 # entry, so this checks the absence of all three: a wider mode or one named entry would open them,
 # and a check that read only the owner would not see it.
 #
@@ -23,7 +23,7 @@ note() { printf 'NOTE %s\n' "$*"; SKIPPED=$((SKIPPED + 1)); }
 skip() { printf 'SKIP %s\n' "$*"; exit 77; }
 
 CONFIG_DIR="/etc/${FS_NAME}"
-CONFIG_NAMES=(daemon.yaml identity-rules.yaml policy.rego)
+CONFIG_NAMES=(config.yaml policy.rego)
 
 [[ -d "$CONFIG_DIR" ]] || skip "${CONFIG_DIR} is not there, so this host carries no deployment"
 

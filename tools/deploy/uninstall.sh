@@ -53,10 +53,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ── what install.sh recorded ────────────────────────────────────────────
-DEVICE=
-deviceGroup=
-daxDriver=
-ACCOUNT=
+devices=
+deviceGroups=
+daxDrivers=
+account=
 mounts=
 createdMounts=unrecorded
 prefix=
@@ -65,13 +65,17 @@ moduleDir=
 if [ -r "$STATEFILE" ]; then
 	# shellcheck disable=SC1090
 	. "$STATEFILE"
-	DEVICE="${device:-}"
 	# Where install.sh actually put them, which a --prefix run makes different from the default.
 	PREFIX="${prefix:-$PREFIX}"
 	MODULE_DIR="${moduleDir:-$MODULE_DIR}"
 else
-	echo "uninstall.sh: no ${STATEFILE}; the device will be left as it is"
+	echo "uninstall.sh: no ${STATEFILE}; the devices will be left as they are"
 fi
+ACCOUNT="$account"
+# One word per device in each list, in the same order.
+read -r -a DEVICES <<<"$devices"
+read -r -a DEVICE_GROUPS <<<"$deviceGroups"
+read -r -a DAX_DRIVERS <<<"$daxDrivers"
 
 # Without the state file the mount points are unknown, so fall back to whatever units are here.
 if [ -n "$mounts" ]; then
@@ -162,26 +166,31 @@ if [ -d /sys/module/${FS_NAME} ]; then
 	fi
 fi
 
-# ── the device ──────────────────────────────────────────────────────────
-# Rebind first: an unbound dax device has no /dev node, so the chgrp below has nothing to act on
-# until device_dax recreates it.
-if [ -n "$DEVICE" ] && [ -n "$daxDriver" ] && [ -d /sys/module/${FS_NAME} ]; then
-	echo "uninstall.sh: ${FS_NAME} still loaded; ${DEVICE} left unbound"
-elif [ -n "$DEVICE" ] && [ -n "$daxDriver" ]; then
-	name="$(basename "$DEVICE")"
-	if [ -e "/sys/bus/dax/devices/${name}" ] && [ ! -L "/sys/bus/dax/devices/${name}/driver" ]; then
-		echo "$name" >"/sys/bus/dax/drivers/${daxDriver}/bind"
-		echo "uninstall.sh: ${DEVICE} rebound to ${daxDriver}"
-	fi
-fi
+# ── the devices ─────────────────────────────────────────────────────────
+for index in "${!DEVICES[@]}"; do
+	device="${DEVICES[$index]}"
+	driver="${DAX_DRIVERS[$index]:--}"
+	group="${DEVICE_GROUPS[$index]:-}"
 
-# The group is all install.sh changed, so the group is all that goes back. Its mode is left where
-# it stands, which may be somewhere an operator moved it.
-if [ -n "$DEVICE" ] && [ -e "$DEVICE" ] && [ -n "$deviceGroup" ]; then
-	deviceGroup="$(chooseRestoredGroup "$deviceGroup")"
-	chgrp "$deviceGroup" "$DEVICE"
-	echo "uninstall.sh: ${DEVICE} group restored to $(stat -c '%G' "$DEVICE")"
-fi
+	# Rebind first: an unbound dax device has no /dev node, so the chgrp below has nothing to act on
+	# until device_dax recreates it.
+	if [ "$driver" != - ] && [ -d /sys/module/${FS_NAME} ]; then
+		echo "uninstall.sh: ${FS_NAME} still loaded; ${device} left unbound"
+	elif [ "$driver" != - ]; then
+		name="$(basename "$device")"
+		if [ -e "/sys/bus/dax/devices/${name}" ] && [ ! -L "/sys/bus/dax/devices/${name}/driver" ]; then
+			echo "$name" >"/sys/bus/dax/drivers/${driver}/bind"
+			echo "uninstall.sh: ${device} rebound to ${driver}"
+		fi
+	fi
+
+	# The group is all install.sh changed, so the group is all that goes back. Its mode is left
+	# where it stands, which may be somewhere an operator moved it.
+	if [ -e "$device" ] && [ -n "$group" ]; then
+		chgrp "$(chooseRestoredGroup "$group")" "$device"
+		echo "uninstall.sh: ${device} group restored to $(stat -c '%G' "$device")"
+	fi
+done
 
 # ── what a build put on the host ────────────────────────────────────────
 # After the module is unloaded: removing the file under /lib/modules while it is resident leaves a

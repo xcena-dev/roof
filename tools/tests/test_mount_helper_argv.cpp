@@ -170,7 +170,7 @@ void checkRegionFormatArgsGivesUpOnANonzeroExit(const ScratchDir& scratch)
     writeStub(scratch.join("daemon-failing-stub"), logPath, {"never used"}, 7);
     ::setenv(FS_NAME_UPPER_STR "_DAEMON", scratch.join("daemon-failing-stub").c_str(), 1);
 
-    const auto answer = fstools::regionFormatArgs("/etc/rooffs/daemon.yaml", "/mnt/example", std::nullopt);
+    const auto answer = fstools::regionFormatArgs("/etc/rooffs/config.yaml", "/mnt/example", std::nullopt);
     check("regionFormatArgs answers nothing for a failing daemon", !answer.has_value());
 }
 
@@ -181,7 +181,7 @@ void checkRegionFormatArgsGivesUpOnAnEmptyFirstLine(const ScratchDir& scratch)
     writeStub(scratch.join("daemon-empty-stub"), logPath, {"", "a second line is not the first"}, 0);
     ::setenv(FS_NAME_UPPER_STR "_DAEMON", scratch.join("daemon-empty-stub").c_str(), 1);
 
-    const auto answer = fstools::regionFormatArgs("/etc/rooffs/daemon.yaml", "/mnt/example", std::nullopt);
+    const auto answer = fstools::regionFormatArgs("/etc/rooffs/config.yaml", "/mnt/example", std::nullopt);
     check("regionFormatArgs answers nothing for an empty first line", !answer.has_value());
 }
 

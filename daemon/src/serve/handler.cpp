@@ -8,6 +8,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -213,6 +215,7 @@ RequestHandler::RequestHandler(const Services_t& services) noexcept
       pool_{services.pool},
       audit_{services.audit},
       stat_{services.stat},
+      checkSettings_{services.checkSettings},
       usesWorker_{identity_.needsWorker() || (policy_ != nullptr && policy_->needsWorker())}
 {
 }
@@ -361,11 +364,24 @@ void RequestHandler::reloadBackends() noexcept
 {
     try
     {
+        if (checkSettings_)
+        {
+            checkSettings_();
+        }
+        identity_.checkReload();
+        if (policy_ != nullptr)
+        {
+            policy_->checkReload();
+        }
         identity_.reload();
         if (policy_ != nullptr)
         {
             policy_->reload();
         }
+    }
+    catch (const std::exception& refused)
+    {
+        std::fprintf(stderr, "[config] reload refused (%s); everything loaded is kept\n", refused.what());
     }
     catch (...)  // NOLINT(bugprone-empty-catch) both reloads keep what was already loaded on failure
     {

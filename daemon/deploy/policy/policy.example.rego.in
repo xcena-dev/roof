@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # @DAEMON_NAME@ authorization policy (example, Rego/OPA).
-# Copy to /etc/@FS_NAME@/policy.rego. Select via daemon.yaml backends.policy=opa.
+# Installed as /etc/@FS_NAME@/policy.rego. Both config.yaml policy.backend values read this file.
 #
 # Input (provided by @DAEMON_NAME@):
 #   input.consumer.group / .role  — resolved on the local node

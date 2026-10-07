@@ -33,7 +33,7 @@ The arrows from a module outward name what it reaches and how.
 - **Identity provider.**
   Answers who a process is, 
   for the owner at `ATTEST` and for the reader at `ACCESS`.
-  The local backend matches the selector rules in `identity-rules.yaml`.
+  The local backend matches the selector rules in `config.yaml`.
   The SPIRE backend calls the SPIRE Agent's Delegated Identity API.
 - **Policy engine.**
   Decides at `ACCESS` which permissions the reader gets on the region, 
@@ -89,69 +89,76 @@ The local identity backend hands out SPIFFE ids of the same form,
 so a policy written against `input.consumer.spiffe_id` runs unchanged when a host moves to SPIRE.
 The local policy backend evaluates the very same `policy.rego`.
 A host starts with the two local backends and no other service, 
-and switches either one by changing a name in `daemon.yaml`.
+and switches either one by changing a name in `config.yaml`.
 
 ## Configuration
 
-Three files under `/etc/rooffs/`, planted from the examples in [`deploy/`](deploy/) by the installer. <!-- fsname -->
-Each is owned by the daemon's own account at mode `0400`, with root as its group,
+Two files under `/etc/rooffs/`, planted from the examples in [`deploy/`](deploy/) by the installer. <!-- fsname -->
+`config.yaml` holds every setting the host deploys and runs with, 
+and `policy.rego` holds the policy.
+Each is owned by the daemon's own account at mode `0400`, with root as its group, 
 so root and that account are the only ones that read them.
-The daemon reads them where they are.
-Edit one with `sudo`, then send `SIGHUP` to reload all three.
-An inline `policy:` key is refused, 
-so the policy file stays the single source of truth.
+The daemon runs as the account that owns `config.yaml`, 
+and refuses to start as any other.
 
-### `daemon.yaml`: which backends, and how to reach them
+Edit one with `sudo`, then send `SIGHUP`.
+A reload takes the rules and the policy.
+An edit to any other key the daemon reads refuses the whole reload, 
+and that key takes a restart instead.
+`roofd --check-config` loads both files the way a reload would, without serving.
+A deploy script reads a key with `roofd --print-config <key>`, through the same parser.
 
-```yaml
-backends:
-  identity: local        # or spire
-  policy:   local        # or opa
-
-# identity: local
-identity_rules_path: identity-rules.yaml   # relative, so it resolves next to this file
-selectors: [uid, path]   # the match kinds the identity rules may use
-
-# policy: local
-policy_path: policy.rego                   # relative, same reasoning
-
-# identity: spire
-spire_workload_api_socket: /run/spire-agent/admin/api.sock
-
-# policy: opa
-policy_url: http://127.0.0.1:8181/v1/data/rooffs/authz
-```
-<!-- fsname -->
-
-- `backends` selects by registered name, 
-  and a name nothing registered under is refused at startup.
-  `spire` needs the SPIRE Agent's admin socket, 
-  and `opa` an OPA server at `policy_url`.
-- `selectors` is the allow-list of match kinds an identity rule may use.
-  A rule using any other kind is dropped when the rules load.
-
-### `identity-rules.yaml`: who a process is
-
-The kernel sends the task's uid, gid and executable.
-A rule matches on those and hands back a SPIFFE id, a group and a role.
+### `config.yaml`
 
 ```yaml
+accounts:
+  daemon: rooffs          # runs the daemon and owns this file
+  workload: app           # the account the applications run as
+
+mounts:
+  - point: /mnt/rooffs
+    device: /dev/dax0.0
+  - point: /mnt/rooffs2
+    device: /dev/dax1.0
+
+identity:
+  backend: local          # or spire
+  selectors: [uid, path]  # the match kinds a rule may use
+
+policy:
+  backend: local          # or opa
+  path: policy.rego       # relative, so it resolves next to this file
+  package: rooffs.authz   # the package policy.rego declares
+  opa_socket: /run/rooffs-opa/api.sock
+
+spire:
+  trust_domain: rooffs.local
+  admin_socket: /run/spire-agent/admin/api.sock
+
 rules:
   - match:
       uid: 1005
     identity:
-      spiffe_id: spiffe://rooffs.local/group/prod/role/llm-worker
-      group:     prod
-      role:      llm-worker
-
-default: deny
+      group: prod
+      role: llm-worker
 ```
 <!-- fsname -->
 
-- The selectors inside one `match` AND together, 
+- `identity.backend` and `policy.backend` select by registered name, 
+  and a name nothing registered under is refused at startup.
+  `spire` needs the SPIRE Agent's admin socket, 
+  and `opa` an OPA server on `policy.opa_socket`.
+- `selectors` is the allow-list of match kinds a rule may use.
+  A rule using any other kind is dropped when the rules load.
+- A rule matches on the task's uid, gid and executable, 
+  and hands back a group and a role.
+  The selectors inside one `match` AND together, 
   and the first rule that matches wins.
-- `default: deny` is what a task matching no rule gets, 
-  and a create by such a task is refused.
+  A task that matches no rule is refused, 
+  and so is a create by it.
+- A rule's SPIFFE id is `spiffe://<trust_domain>/group/<group>/role/<role>`, 
+  the same form SPIRE issues.
+- The installer writes the systemd units, the udev rule and the SPIRE configs from these keys.
 
 ### `policy.rego`: which permissions an identity gets
 

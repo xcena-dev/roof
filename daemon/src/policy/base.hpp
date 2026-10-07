@@ -70,6 +70,12 @@ public:
 
     // Re-reads the policy source. A failure keeps whatever was already loaded.
     virtual void reload() = 0;
+
+    // Throws when the next reload() would fail, and changes nothing loaded. An engine whose policy a
+    // server holds has nothing here to check.
+    virtual void checkReload() const
+    {
+    }
 };
 
 // The JSON input a decision is evaluated over: {consumer:{spiffe_id,group,role}, owner:{group,role}}.

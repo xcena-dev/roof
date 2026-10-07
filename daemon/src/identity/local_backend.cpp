@@ -18,7 +18,7 @@ const bool RegisteredLocalIdentity = fsdaemon::registerIdentityBackend(
     [](const fsdaemon::config::Config& config) -> std::unique_ptr<fsdaemon::identity::IdentityProvider>
     {
         return std::make_unique<fsdaemon::identity::LocalIdentityProvider>(
-            config.getIdentityRulesPath(), config.getSelectors());
+            config.getIdentityRulesPath(), config.getSelectors(), config.getTrustDomain());
     });
 
 }  // namespace

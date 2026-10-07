@@ -5,9 +5,7 @@
 
 #include "identity/internal/local.hpp"
 
-#include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <charconv>
 #include <cinttypes>
@@ -18,16 +16,15 @@
 #include <optional>
 #include <set>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "identity/base.hpp"
 #include "identity/internal/selector.hpp"
-#include "identity/internal/spiffe.hpp"
 #include "model.hpp"
 #include "util/file_text.hpp"
 #include "util/text.hpp"
@@ -105,11 +102,7 @@ Section takeKey(RawRule_t& rule, Section section, std::string_view token)
     }
     if (section == Section::Identity)
     {
-        if (keyText == "spiffe_id")
-        {
-            rule.identity.spiffeId = valueText;
-        }
-        else if (keyText == "group")
+        if (keyText == "group")
         {
             rule.identity.group = valueText;
         }
@@ -261,11 +254,28 @@ parseMatchBlock(const std::vector<std::pair<std::string, std::string>>& block, c
     return rules;
 }
 
+// The id SPIRE would issue for @identity under @trustDomain, so a policy reads one shape from either
+// backend. Empty without a trust domain, which only a hand run or a test leaves unset.
+std::string makeSpiffeId(std::string_view trustDomain, const Identity_t& identity)
+{
+    if (trustDomain.empty() || identity.group.empty())
+    {
+        return "";
+    }
+    std::string spiffeId{"spiffe://"};
+    spiffeId.append(trustDomain).append("/group/").append(identity.group);
+    if (!identity.role.empty())
+    {
+        spiffeId.append("/role/").append(identity.role);
+    }
+    return spiffeId;
+}
+
 // The rules in @text, keeping only those whose selector kinds @selectors supports. Throws
 // BridgeError on a bad file or an unknown kind, so a caller retains the previous rules. A rule
 // naming a kind outside @selectors, or with no match clause, is skipped rather than failing the
 // whole file.
-std::vector<Rule_t> parseRulesText(std::string_view text, const Selector& selectors)
+std::vector<Rule_t> parseRulesText(std::string_view text, const Selector& selectors, std::string_view trustDomain)
 {
     const auto raw = parseRawRules(text);
     std::vector<Rule_t> rules;
@@ -284,56 +294,34 @@ std::vector<Rule_t> parseRulesText(std::string_view text, const Selector& select
         }
 
         auto identity = rawRule.identity;
-        if (!identity.spiffeId.empty())
-        {
-            const auto [parsedGroup, parsedRole] = parseSpiffePath(identity.spiffeId);
-            if (!identity.group.empty() && !parsedGroup.empty() && parsedGroup != identity.group)
-            {
-                continue;
-            }
-            if (!identity.role.empty() && !parsedRole.empty() && parsedRole != identity.role)
-            {
-                continue;
-            }
-            if (identity.group.empty())
-            {
-                identity.group = parsedGroup;
-            }
-            if (identity.role.empty())
-            {
-                identity.role = parsedRole;
-            }
-        }
+        identity.spiffeId = makeSpiffeId(trustDomain, identity);
         rules.push_back(Rule_t{std::move(*matched), std::move(identity)});
     }
     return rules;
 }
 
-// What one stat of the rules file settles, which is the whole of what loadRules branches on.
-enum class Standing
+// One read of the rules file before anything is swapped: what the read settled and, for a trusted
+// file, the rules it parsed.
+struct StagedRules_t
 {
-    Absent,     // nothing there to load, so the backend resolves nothing
-    Untrusted,  // a writer this daemon may not take rules from
-    Trusted,
+    util::Standing standing{util::Standing::Absent};
+    std::vector<Rule_t> rules;
+    std::uint64_t bytes{0};
 };
 
-// Whether @path came from a writer this daemon may trust: owned by root or by the daemon's own
-// euid, and not world-writable. A file anyone can rewrite chooses the admission rules.
-Standing readStanding(const std::string& path)
+// Throws BridgeError on a trusted file that will not parse, and std::runtime_error on one whose read
+// fails partway. An empty @path opens nothing, so it reads as absent.
+StagedRules_t readRules(const std::string& path, const Selector& selectors, std::string_view trustDomain)
 {
-    struct ::stat info
+    const auto found = util::readTrustedText(path);
+    StagedRules_t staged;
+    staged.standing = found.standing;
+    staged.bytes = found.text.size();
+    if (found.standing == util::Standing::Trusted)
     {
-    };
-    if (::stat(path.c_str(), &info) != 0)
-    {
-        return Standing::Absent;
+        staged.rules = parseRulesText(found.text, selectors, trustDomain);
     }
-    if (info.st_uid != 0 && info.st_uid != ::geteuid())
-    {
-        return Standing::Untrusted;
-    }
-    // Group-write is allowed for the umask-002 installs. World-write is not.
-    return (info.st_mode & S_IWOTH) == 0 ? Standing::Trusted : Standing::Untrusted;
+    return staged;
 }
 
 }  // namespace
@@ -343,17 +331,20 @@ Standing readStanding(const std::string& path)
 struct LocalIdentityProvider::Impl
 {
     std::string path;
+    std::string trustDomain;
 
     mutable std::shared_mutex guard;
     std::vector<Rule_t> loaded;
 };
 
 LocalIdentityProvider::LocalIdentityProvider(std::string rulesPath,
-                                             const std::vector<std::string>& selectorNames)
+                                             const std::vector<std::string>& selectorNames,
+                                             std::string trustDomain)
     : IdentityProvider{selectorNames},
       impl_{std::make_unique<Impl>()}
 {
     impl_->path = std::move(rulesPath);
+    impl_->trustDomain = std::move(trustDomain);
     loadRules();
 }
 
@@ -364,43 +355,47 @@ void LocalIdentityProvider::reload()
     loadRules();
 }
 
+void LocalIdentityProvider::checkReload() const
+{
+    const auto staged = readRules(impl_->path, getSelectors(), impl_->trustDomain);
+    if (staged.standing == util::Standing::Untrusted)
+    {
+        throw BridgeError{impl_->path + " has unsafe permissions"};
+    }
+}
+
 void LocalIdentityProvider::loadRules()
 {
-    const auto standing = impl_->path.empty() ? Standing::Absent : readStanding(impl_->path);
-    if (standing == Standing::Absent)
+    StagedRules_t staged;
+    try
+    {
+        staged = readRules(impl_->path, getSelectors(), impl_->trustDomain);
+    }
+    catch (const std::runtime_error& bad)
+    {
+        std::fprintf(stderr, "[identity-local] reload aborted (%s); previous rules retained\n", bad.what());
+        return;
+    }
+    if (staged.standing == util::Standing::Absent)
     {
         const std::unique_lock guard{impl_->guard};
         impl_->loaded.clear();
         return;
     }
-    if (standing == Standing::Untrusted)
+    if (staged.standing == util::Standing::Untrusted)
     {
         std::fprintf(stderr, "[identity-local] %s has unsafe permissions; refusing\n", impl_->path.c_str());
         return;
     }
 
-    // A file the stat found but the open cannot reach reads as empty, which is a rules file that
-    // resolves nothing rather than a reason to keep the last one.
-    const auto text = util::readFileText(impl_->path).value_or(std::string{});
-    std::vector<Rule_t> staged;
-    try
-    {
-        staged = parseRulesText(text, getSelectors());
-    }
-    catch (const BridgeError& bad)
-    {
-        std::fprintf(stderr, "[identity-local] reload aborted (%s); previous rules retained\n", bad.what());
-        return;
-    }
-
     // The byte count is what an edit changes, so the line says whether this load read the edit.
-    const std::uint64_t ruleCount = staged.size();
+    const std::uint64_t ruleCount = staged.rules.size();
     {
         const std::unique_lock guard{impl_->guard};
-        impl_->loaded = std::move(staged);
+        impl_->loaded = std::move(staged.rules);
     }
     std::fprintf(stderr, "[identity-local] loaded %" PRIu64 " rules (%" PRIu64 " bytes) from %s\n", ruleCount,
-                 static_cast<std::uint64_t>(text.size()), impl_->path.c_str());
+                 staged.bytes, impl_->path.c_str());
 }
 
 Identity_t LocalIdentityProvider::attest(pid_t pid, const Creds_t& facts)

@@ -31,14 +31,20 @@ the daemon through its own installer, the mount units, and the mounts started.
 | Option | Meaning |
 |---|---|
 | `--account NAME` | the account every application runs as (default: the sudo caller) |
-| `--device PATH` | the DAX device the mounts sit on |
-| `--mount PATH` | a mount point; repeat for more (default: one under `/mnt`, named after the filesystem) |
+| `--device PATH` | the DAX device a mount without one of its own sits on |
+| `--mount PATH[=DEV]` | a mount point, on `DEV` or on `--device`; repeat for more (default: one under `/mnt`, named after the filesystem) |
 | `--no-start` | write everything but leave the mounts down |
-| `--reset-cfg` | replace the daemon's configs with this tree's examples |
+| `--reset-cfg` | replace the config and the policy with this tree's examples |
 | `--skip-build` | install what is already built |
 | `--prefix PATH` | where the library and its headers go (default: `/usr/local`) |
 
-The device is unbound from `device_dax` first, 
+`--account`, `--device` and `--mount` shape the config a first run plants.
+Once the config is there, 
+it is the one source: 
+the accounts and the mounts come from it, 
+and an edit to it is what changes them.
+
+Each device is unbound from `device_dax` first, 
 since the module maps it itself, 
 and never while something has it open, 
 since that locks the host up.

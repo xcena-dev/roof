@@ -43,26 +43,34 @@ std::string qualifyQuery(std::string query)
     return "data." + query;
 }
 
-// The engine the policy at @policyPath builds, or a throw naming that path. A build that works says
-// how many bytes it read, which is what an edit changes.
-regorus::Engine loadBase(const std::string& policyPath)
+// The engine the policy at @policyPath builds, and the bytes it read. Throws naming that path.
+std::pair<regorus::Engine, std::uint64_t> buildBase(const std::string& policyPath)
 {
-    const auto rego = util::readFileText(policyPath);
-    if (!rego)
+    const auto found = util::readTrustedText(policyPath);
+    if (found.standing == util::Standing::Absent)
     {
         throw std::runtime_error{"policy: cannot read " + policyPath};
     }
+    if (found.standing == util::Standing::Untrusted)
+    {
+        throw std::runtime_error{"policy: " + policyPath + " has unsafe permissions"};
+    }
     try
     {
-        regorus::Engine engine{"policy.rego", *rego};
-        std::fprintf(stderr, "[policy-local] loaded %s (%" PRIu64 " bytes)\n", policyPath.c_str(),
-                     static_cast<std::uint64_t>(rego->size()));
-        return engine;
+        return {regorus::Engine{"policy.rego", found.text}, found.text.size()};
     }
     catch (const std::runtime_error& bad)
     {
         throw std::runtime_error{std::string{"policy: "}.append(policyPath).append(": ").append(bad.what())};
     }
+}
+
+// buildBase, saying how many bytes it read, which is what an edit changes.
+regorus::Engine loadBase(const std::string& policyPath)
+{
+    auto [engine, bytes] = buildBase(policyPath);
+    std::fprintf(stderr, "[policy-local] loaded %s (%" PRIu64 " bytes)\n", policyPath.c_str(), bytes);
+    return std::move(engine);
 }
 
 }  // namespace
@@ -132,6 +140,11 @@ void LocalPolicyEngine::warm(const std::vector<fsdaemon::Identity_t>& identities
             static_cast<void>(decide(consumer, owner.group, owner.role));
         }
     }
+}
+
+void LocalPolicyEngine::checkReload() const
+{
+    static_cast<void>(buildBase(policyPath_));
 }
 
 void LocalPolicyEngine::reload()

@@ -122,6 +122,29 @@ void checkReloadKeepsPolicy(fsdaemon::probe::Context& ctx)
     ctx.check(same.allow, "a bad reload keeps the policy already loaded");
 }
 
+bool passesReloadCheck(const LocalPolicyEngine& engine)
+{
+    try
+    {
+        engine.checkReload();
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+    return true;
+}
+
+void checkReloadCheck(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{PolicyRego, "daemon-policy"};
+    const LocalPolicyEngine engine{file.getPath(), LocalPolicyEngine::getDefaultQuery()};
+    ctx.check(passesReloadCheck(engine), "a policy that compiles passes the check");
+
+    file.rewrite(std::string{"package "} + std::string{fsdaemon::name::FsName} + ".authz\nthis is not rego {{{\n");
+    ctx.check(!passesReloadCheck(engine), "a policy that will not compile fails the check");
+}
+
 void checkFailClosedReading(fsdaemon::probe::Context& ctx)
 {
     ctx.check(!decisionFor("{}").allow && decisionFor("{}").reason.find("allow") != std::string::npos,
@@ -230,7 +253,7 @@ void checkShippedExample(fsdaemon::probe::Context& ctx)
 
 void checkPackageQuery(fsdaemon::probe::Context& ctx)
 {
-    // What an administrator writes in daemon.yaml is the package, and rego reaches a rule only
+    // What an administrator writes in config.yaml is the package, and rego reaches a rule only
     // through data. A query taken verbatim would answer nothing and refuse every request.
     const TempFile file{std::string{PolicyRego}, "daemon-policy"};
     LocalPolicyEngine engine{file.getPath(), std::string{fsdaemon::name::FsName} + ".authz"};
@@ -250,6 +273,7 @@ int main()
             refuseMissingPolicy(ctx);
             checkRealRequests(ctx);
             checkReloadKeepsPolicy(ctx);
+            checkReloadCheck(ctx);
             checkFailClosedReading(ctx);
             checkMalformedResult(ctx);
             checkUnreadableResult(ctx);

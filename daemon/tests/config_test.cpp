@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright XCENA Inc.
 //
-// tests/config_test.cpp -- daemon.yaml parsing, the backends block included.
+// tests/config_test.cpp -- config.yaml parsing, its list blocks and the account it names included.
 
 #include "config/config.hpp"
 
+#include <pwd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <exception>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "config/internal/mount_table.hpp"
 #include "harness/probe.hpp"
@@ -26,51 +33,56 @@ bool endsWith(const std::string& text, const std::string& tail)
     return text.size() >= tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
 }
 
+// Whether loading the file at @path throws.
+bool refusesToLoadFile(const std::string& path)
+{
+    try
+    {
+        static_cast<void>(Config::load(path));
+    }
+    catch (const std::exception&)
+    {
+        return true;
+    }
+    return false;
+}
+
+// Whether loading @content throws, so a case asserts a refusal in one line.
+bool refusesToLoad(const std::string& content)
+{
+    const TempFile file{content, "daemon-config"};
+    return refusesToLoadFile(file.getPath());
+}
+
 void checkMinimalLoad(fsdaemon::probe::Context& ctx)
 {
     const TempFile file{"audit:\n  target: stdout\n", "daemon-config"};
     const Config config = Config::load(file.getPath());
-    ctx.check(endsWith(config.getPolicyPath(), "/policy.rego"), "policy_path defaults under the conf dir");
-    ctx.check(config.getNodeId() == 0, "node_id defaults to 0");
+    const std::string fsName{fsdaemon::name::FsName};
+    ctx.check(endsWith(config.getPolicyPath(), "/policy.rego"), "policy.path defaults under the conf dir");
+    ctx.check(config.getIdentityRulesPath() == file.getPath(), "the rules are read from the config itself");
+    ctx.check(config.getNodeId() == 0, "the node id is the unit's to give");
+    ctx.check(config.findSetting("accounts.daemon") == std::vector<std::string>{fsName},
+              "accounts.daemon defaults to the filesystem's name");
+    ctx.check(config.getTrustDomain() == fsName + ".local", "the trust domain defaults under that name");
+    ctx.check(config.findSetting("mounts") == std::vector<std::string>{}, "a config without mounts lists none");
 }
 
-void refuseInlinePolicy(fsdaemon::probe::Context& ctx)
+void checkPolicyPackage(fsdaemon::probe::Context& ctx)
 {
-    const TempFile file{"policy:\n  package: x\n", "daemon-config"};
-    bool threw = false;
-    std::string message;
-    try
-    {
-        static_cast<void>(Config::load(file.getPath()));
-    }
-    catch (const std::exception& error)
-    {
-        threw = true;
-        message = error.what();
-    }
-    ctx.check(threw && message.find("inline 'policy:'") != std::string::npos,
-              "an inline policy block is refused");
-}
-
-void checkOverrides(fsdaemon::probe::Context& ctx)
-{
-    const TempFile file{
-        "policy_path: /custom/policy.rego\n"
-        "identity_rules_path: /custom/rules.yaml\n"
-        "node_id: 5\n",
-        "daemon-config"};
+    const TempFile file{"policy:\n  package: acme.authz\n  path: /custom/policy.rego\n", "daemon-config"};
     const Config config = Config::load(file.getPath());
-    ctx.check(config.getPolicyPath() == "/custom/policy.rego", "policy_path is overridable");
-    ctx.check(config.getIdentityRulesPath() == "/custom/rules.yaml", "identity_rules_path is overridable");
-    ctx.check(config.getNodeId() == 5, "node_id is overridable");
-    ctx.check(config.getChannelPath() == fsdaemon::name::channelPathForNode(5), "the device path follows node_id");
+    ctx.check(config.getPolicyQuery() == "acme.authz", "policy.package is the query");
+    ctx.check(endsWith(config.getPolicyUrl(), "/v1/data/acme/authz"), "and the OPA path, with slashes");
+    ctx.check(config.getPolicyPath() == "/custom/policy.rego", "policy.path is overridable");
 }
 
 void checkNodeIdOverride(fsdaemon::probe::Context& ctx)
 {
-    const TempFile file{"node_id: 2\n", "daemon-config"};
+    const TempFile file{"audit:\n  target: stdout\n", "daemon-config"};
     const Config config = Config::load(file.getPath(), 7);
-    ctx.check(config.getNodeId() == 7, "a node-id override replaces the file's node_id");
+    ctx.check(config.getNodeId() == 7, "the node-id override is the node served");
+    ctx.check(config.getChannelPath() == fsdaemon::name::channelPathForNode(7), "the device path follows it");
 }
 
 void checkDurationUnits(fsdaemon::probe::Context& ctx)
@@ -80,17 +92,6 @@ void checkDurationUnits(fsdaemon::probe::Context& ctx)
     ctx.checkf(config.getRequestTimeout() == std::chrono::milliseconds{250},
                "250ms parses to a 250ms budget (%lld)",
                static_cast<long long>(config.getRequestTimeout().count()));
-}
-
-void checkChannelPathOverride(fsdaemon::probe::Context& ctx)
-{
-    const TempFile named{"node_id: 3\nchannel_path: /dev/somewhere-else\n", "daemon-config"};
-    ctx.check(Config::load(named.getPath()).getChannelPath() == "/dev/somewhere-else",
-              "channel_path wins over the path node_id would name");
-
-    const TempFile derived{"node_id: 3\n", "daemon-config"};
-    ctx.check(Config::load(derived.getPath()).getChannelPath() == fsdaemon::name::channelPathForNode(3),
-              "without it the path follows node_id");
 }
 
 void checkTraceSwitch(fsdaemon::probe::Context& ctx)
@@ -110,25 +111,138 @@ void checkWorkerCount(fsdaemon::probe::Context& ctx)
     const TempFile bare{"audit:\n  target: stdout\n", "daemon-config"};
     ctx.check(Config::load(bare.getPath()).getWorkerCount() == 4, "it defaults to 4");
 
-    const TempFile none{"upcall:\n  workers: 0\n", "daemon-config"};
-    bool threw = false;
+    ctx.check(refusesToLoad("upcall:\n  workers: 0\n"), "zero workers is refused, since a lock would never be answered");
+}
+
+void checkBackends(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{"identity:\n  backend: spire\npolicy:\n  backend: opa\n", "daemon-config"};
+    const Config config = Config::load(file.getPath());
+    ctx.check(config.getIdentityBackend() == "spire", "identity.backend reads spire");
+    ctx.check(config.getPolicyBackend() == "opa", "policy.backend reads opa");
+}
+
+// The two list blocks sit between maps of scalars, so a key after them shows the maps still read.
+std::string makeBlockedConfig()
+{
+    return "accounts:\n"
+           "  daemon: someone\n"
+           "mounts:\n"
+           "  - point: /mnt/one\n"
+           "    device: /dev/dax0.0\n"
+           "  - point: /mnt/two   # a second device\n"
+           "    device: /dev/dax1.0\n"
+           "rules:\n"
+           "  - match:\n"
+           "      uid: 1004\n"
+           "    identity:\n"
+           "      group: prod\n"
+           "audit:\n"
+           "  target: stderr\n";
+}
+
+void checkListBlocks(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{makeBlockedConfig(), "daemon-config"};
+    const Config config = Config::load(file.getPath());
+    const std::vector<std::string> mounts{"/mnt/one /dev/dax0.0", "/mnt/two /dev/dax1.0"};
+    ctx.check(config.findSetting("mounts") == mounts,
+              "each mount keeps its own device, and a comment is not part of the point");
+    ctx.check(config.getAuditTarget() == "stderr", "a map after the list blocks still reads");
+    ctx.check(config.findSetting("accounts.daemon") == std::vector<std::string>{"someone"},
+              "and so does one before them");
+}
+
+void refuseBadMounts(fsdaemon::probe::Context& ctx)
+{
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n"), "a mount without a device is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    devise: /dev/dax0.0\n"),
+              "a misspelled mount field is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    device: /dev/dax0.0\n"
+                            "  - point: /mnt/one\n    device: /dev/dax1.0\n"),
+              "a point listed twice is refused");
+}
+
+void refuseUntrustedFile(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{"audit:\n  target: stdout\n", "daemon-config"};
+    constexpr ::mode_t GroupWritable = 0620;
+    ctx.check(::chmod(file.getPath().c_str(), GroupWritable) == 0, "the test can loosen its own file");
+    ctx.check(refusesToLoadFile(file.getPath()), "a config its group can write is refused");
+}
+
+void checkFindSetting(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{makeBlockedConfig(), "daemon-config"};
+    const Config config = Config::load(file.getPath());
+
+    const auto mounts = config.findSetting("mounts");
+    ctx.check(mounts && mounts->size() == 2 && (*mounts)[0] == "/mnt/one /dev/dax0.0",
+              "a mount prints as its point and its device on one line");
+    const auto account = config.findSetting("accounts.daemon");
+    ctx.check(account && account->size() == 1 && account->front() == "someone", "a scalar prints as one line");
+    const auto port = config.findSetting("spire.server_port");
+    ctx.check(port && port->front() == "8081", "a default prints like a written value");
+    ctx.check(!config.findSetting("audit.target"), "a key no script reads is not offered");
+}
+
+// Why checkReloadable refuses @edit over a daemon that loaded makeBlockedConfig, or nullopt when it
+// takes the edit.
+std::optional<std::string> findReloadRefusal(const std::string& edit)
+{
+    const TempFile file{makeBlockedConfig(), "daemon-config"};
+    const Config running = Config::load(file.getPath());
+    file.rewrite(edit);
     try
     {
-        static_cast<void>(Config::load(none.getPath()));
+        running.checkReloadable();
+    }
+    catch (const std::exception& error)
+    {
+        return error.what();
+    }
+    return std::nullopt;
+}
+
+void checkReloadableEdits(fsdaemon::probe::Context& ctx)
+{
+    const auto rulesEdit = findReloadRefusal(makeBlockedConfig() + "# a comment\n");
+    ctx.check(!rulesEdit, "an edit no running key reads is taken");
+
+    const auto restartEdit = findReloadRefusal(makeBlockedConfig() + "upcall:\n  workers: 7\n");
+    ctx.check(restartEdit && restartEdit->find("upcall.workers") != std::string::npos,
+              "an edit to a key the daemon was built from is refused, and named");
+
+    const auto brokenEdit = findReloadRefusal("audit:\n\ttarget: stdout\n");
+    ctx.check(brokenEdit.has_value(), "an edit that will not parse is refused");
+}
+
+std::string makeAccountConfig(const std::string& account)
+{
+    return "accounts:\n  daemon: " + account + "\n";
+}
+
+// Whether requireDaemonAccount accepts a config owned by this test that names @account.
+bool acceptsAccount(const std::string& account)
+{
+    const TempFile file{makeAccountConfig(account), "daemon-config"};
+    try
+    {
+        Config::load(file.getPath()).requireDaemonAccount();
     }
     catch (const std::exception&)
     {
-        threw = true;
+        return false;
     }
-    ctx.check(threw, "zero workers is refused, since a lock would never be answered");
+    return true;
 }
 
-void checkBackendsBlock(fsdaemon::probe::Context& ctx)
+void checkDaemonAccount(fsdaemon::probe::Context& ctx)
 {
-    const TempFile file{"backends:\n  identity: spire\n  policy: opa\n", "daemon-config"};
-    const Config config = Config::load(file.getPath());
-    ctx.check(config.getIdentityBackend() == "spire", "identity backend reads spire");
-    ctx.check(config.getPolicyBackend() == "opa", "policy backend reads opa");
+    const auto* const self = ::getpwuid(::geteuid());
+    ctx.check(self != nullptr && acceptsAccount(self->pw_name),
+              "the account this daemon runs as, owning the file, is accepted");
+    ctx.check(!acceptsAccount("no-such-account-here"), "an account that does not exist is refused");
 }
 
 // A mount table as the kernel writes one: two nodes of this filesystem, and a mount that is not
@@ -160,7 +274,7 @@ void checkNodeRegionLookup(fsdaemon::probe::Context& ctx)
               "no mount table at all carries no region");
 }
 
-// The region sizing the mount helper asks this daemon for, since it cannot read this config itself.
+// The region sizing the mount helper asks this daemon for.
 void checkRegionSizing(fsdaemon::probe::Context& ctx)
 {
     const TempFile bare{"audit:\n  target: stdout\n", "daemon-config"};
@@ -170,8 +284,7 @@ void checkRegionSizing(fsdaemon::probe::Context& ctx)
               "max_domains defaults to 4, which leaves room beside cme's own");
     ctx.check(fallback.getTurnStrategy() == "peterson", "the strategy defaults to peterson");
 
-    const TempFile named{"turn_region:\n  max_peers: 16\n  max_domains: 32\n  strategy: ticket\n",
-                         "daemon-config"};
+    const TempFile named{"turn:\n  max_peers: 16\n  max_domains: 32\n  strategy: ticket\n", "daemon-config"};
     const Config config = Config::load(named.getPath());
     ctx.check(config.getTurnMaxPeers() == 16, "max_peers reads");
     ctx.check(config.getTurnMaxDomains() == 32, "max_domains reads");
@@ -180,7 +293,7 @@ void checkRegionSizing(fsdaemon::probe::Context& ctx)
 
 void checkNamedRegionPriority(fsdaemon::probe::Context& ctx)
 {
-    const TempFile file{"turn_region:\n  uri: file:/somewhere/else.region\n", "daemon-config"};
+    const TempFile file{"turn:\n  uri: file:/somewhere/else.region\n", "daemon-config"};
     ctx.check(Config::load(file.getPath(), 1).getTurnUri() == "file:/somewhere/else.region",
               "a config naming a region wins over the mount the daemon runs on");
 }
@@ -193,16 +306,20 @@ int main()
         [](fsdaemon::probe::Context& ctx)
         {
             checkMinimalLoad(ctx);
+            checkPolicyPackage(ctx);
             checkNodeRegionLookup(ctx);
             checkNamedRegionPriority(ctx);
             checkRegionSizing(ctx);
-            refuseInlinePolicy(ctx);
-            checkOverrides(ctx);
             checkNodeIdOverride(ctx);
             checkDurationUnits(ctx);
-            checkBackendsBlock(ctx);
+            checkBackends(ctx);
             checkWorkerCount(ctx);
             checkTraceSwitch(ctx);
-            checkChannelPathOverride(ctx);
+            checkListBlocks(ctx);
+            refuseBadMounts(ctx);
+            refuseUntrustedFile(ctx);
+            checkFindSetting(ctx);
+            checkReloadableEdits(ctx);
+            checkDaemonAccount(ctx);
         });
 }

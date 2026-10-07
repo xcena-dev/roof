@@ -37,6 +37,7 @@ public:
                                     std::string_view ownerRole) override;
     void warm(const std::vector<fsdaemon::Identity_t>& identities) override;
     void reload() override;
+    void checkReload() const override;
 
     // The query a deployment gets unless its config names another: data.<fs>.authz.
     [[nodiscard]] static std::string getDefaultQuery();

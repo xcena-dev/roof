@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# The identity rules test_postexec_attack needs, rendered by check.sh and planted for that case
-# alone.
+# The identity rules test_postexec_attack needs. check.sh renders them in place of the config's own
+# rules block and plants the result for that case alone.
 #
 # An account and one binary: the case's own. The binary it execs into then attests to nothing and
 # the region refuses it, which is the claim the case exists to make. Every other binary on the host
@@ -11,8 +11,5 @@ rules:
       uid: @APP_UID@
       path: @CASE_PATH@
     identity:
-      spiffe_id: spiffe://@FS_NAME@.local/group/prod/role/llm-worker
-      group:     prod
-      role:      llm-worker
-
-default: deny
+      group: prod
+      role: llm-worker

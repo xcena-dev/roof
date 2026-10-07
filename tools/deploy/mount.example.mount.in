@@ -24,10 +24,9 @@ Type=@FS_NAME@
 # daemon_config is the only option mount.@FS_NAME@ keeps for itself; it is stripped before mount(2), so
 # the kernel sees nothing it does not know. Everything else here reaches the kernel untouched.
 #
-# daemon_uid= and daemon_gid= bind the lock region to this node's daemon account. The helper
-# resolves them from the account's own passwd entry and adds them here, so they carry no value of
-# their own on this line.
-Options=daxdev=/dev/dax0.0,daemon_config=/etc/@FS_NAME@/daemon.yaml
+# daemon_uid= and daemon_gid= bind the lock region to this node's daemon account. The helper takes
+# that account from the config's owner and adds them, so they carry no value on this line.
+Options=daxdev=/dev/dax0.0,daemon_config=/etc/@FS_NAME@/config.yaml
 
 # The helper starts this node's daemon through systemctl, so it never inherits this unit's
 # privilege, which is the one thing this layout is avoiding. The unit it starts is named after the

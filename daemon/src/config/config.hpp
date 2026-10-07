@@ -3,8 +3,8 @@
 //
 // config/config.hpp -- the daemon's settings, and every source they come from.
 //
-// The file is a nested map of scalars and inline lists, which the house key-value reader (cme's
-// kvconfig) covers, so this reads it with that rather than a parser of its own.
+// One file holds what a host deploys with. Its maps of scalars go through the house key-value reader
+// (cme's kvconfig). Its two lists of maps, rules and mounts, are lifted out and read beside it.
 
 #pragma once
 
@@ -25,12 +25,18 @@ namespace fsdaemon::config
 // The URI of the lock region the mount at @mountPoint carries.
 [[nodiscard]] std::string makeRegionUri(std::string_view mountPoint);
 
+// One mount the host carries: where it is mounted, and the DAX device it lays out on.
+struct Mount_t
+{
+    std::string point;
+    std::string device;
+};
+
 class Config
 {
 public:
-    // Loads daemon.yaml. Throws std::runtime_error on a parse error, an unreadable-but-present file,
-    // or an inline `policy:` block (policy must be a file path). @nodeIdOverride replaces node_id
-    // when it holds one, since the config is identical on every node and the unit knows the mount.
+    // Loads config.yaml. Throws std::runtime_error on a parse error, a missing file, or one this
+    // daemon may not trust. @nodeIdOverride is the node this instance serves, which the unit names.
     [[nodiscard]] static Config load(const std::string& path,
                                      std::optional<std::uint32_t> nodeIdOverride = std::nullopt);
 
@@ -38,6 +44,25 @@ public:
     // reaches keeps its default.
     [[nodiscard]] static Config fromArgs(const std::vector<std::string_view>& args,
                                          std::optional<std::uint32_t> nodeIdOverride = std::nullopt);
+
+    // @key as the lines a deploy script reads, one value to a line, or nullopt for a key it never
+    // asks for. A mount is one line, its point and its device.
+    [[nodiscard]] std::optional<std::vector<std::string>> findSetting(std::string_view key) const;
+
+    // Throws unless this euid, the config file's owner and accounts.daemon name one account. The
+    // mount helper takes the daemon account from that owner, so a daemon running as anyone else is
+    // refused. Settings from a hand run's flags have no owner to compare.
+    void requireDaemonAccount() const;
+
+    // Throws when the file these settings came from fails to load now, or holds a new value for a
+    // key the running daemon was built from. What a SIGHUP checks before any backend re-reads.
+    void checkReloadable() const;
+
+    // The file the settings came from, empty for a hand run's flags.
+    [[nodiscard]] const std::string& getSourcePath() const noexcept
+    {
+        return sourcePath_;
+    }
 
     // ── What the deployment chose ───────────────────────────────────────
     [[nodiscard]] std::uint32_t getNodeId() const noexcept
@@ -57,6 +82,7 @@ public:
     }
 
     // ── What a backend builds itself from ───────────────────────────────
+    // The file the rules are read from: the config itself, or --rules-path on a hand run.
     [[nodiscard]] const std::string& getIdentityRulesPath() const noexcept
     {
         return identityRulesPath_;
@@ -65,6 +91,11 @@ public:
     [[nodiscard]] const std::vector<std::string>& getSelectors() const noexcept
     {
         return selectors_;
+    }
+
+    [[nodiscard]] const std::string& getTrustDomain() const noexcept
+    {
+        return trustDomain_;
     }
 
     [[nodiscard]] const std::string& getSpireSocket() const noexcept
@@ -77,7 +108,7 @@ public:
         return policyPath_;
     }
 
-    // Empty leaves the policy backend on its own default query.
+    // The package the decision lives in. Empty leaves the policy backend on its own default.
     [[nodiscard]] const std::string& getPolicyQuery() const noexcept
     {
         return policyQuery_;
@@ -89,8 +120,7 @@ public:
     }
 
     // The unix socket the policy server answers on. A path here carries the request, and the url's
-    // host then only fills the Host header. Empty puts the request on TCP, which authenticates
-    // nothing about whoever holds that port.
+    // host then only fills the Host header.
     [[nodiscard]] const std::string& getPolicySocket() const noexcept
     {
         return policySocket_;
@@ -103,7 +133,7 @@ public:
     }
 
     // What laying that region out takes. This daemon attaches rather than formats, but the mount
-    // helper cannot read this config and asks for these, so one file answers for both.
+    // helper asks it for these, so one file answers for both.
     [[nodiscard]] std::uint32_t getTurnMaxPeers() const noexcept
     {
         return turnMaxPeers_;
@@ -131,8 +161,8 @@ public:
     }
 
     // ── Derived, so a caller never assembles these itself ───────────────
-    // The char device this node's helper opens its channel on: channel_path or --channel when one
-    // names it, otherwise /dev/<daemon>-<node_id>.
+    // The char device this node's helper opens its channel on: --channel when a hand run names one,
+    // otherwise /dev/<daemon>-<node_id>.
     [[nodiscard]] std::string getChannelPath() const;
 
     // How many worker threads answer off the serve loop. A lock acquire waits on a peer for as
@@ -159,14 +189,26 @@ private:
     // read into and checked.
     Config() = default;
 
+    // The keys this daemon was built from that @staged holds differently.
+    [[nodiscard]] std::vector<std::string> findRestartChanges(const Config& staged) const;
+
     std::uint32_t nodeId_{0};
+    std::string sourcePath_;
+
+    std::string daemonAccount_;
+    std::string workloadAccount_;
+    std::vector<Mount_t> mounts_;
+    std::optional<std::uint32_t> fileOwner_;
 
     std::string identityBackend_{"local"};
     std::string policyBackend_{"local"};
 
     std::string identityRulesPath_;
     std::vector<std::string> selectors_;
+    std::string trustDomain_;
     std::string spireSocket_;
+    std::string spireServerAddress_;
+    std::uint32_t spireServerPort_{8081};
 
     std::string policyPath_;
     std::string policyQuery_;

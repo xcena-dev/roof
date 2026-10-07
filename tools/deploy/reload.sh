@@ -19,16 +19,17 @@ ROOT="$(cd "${HERE}/../.." && pwd)"
 . "${ROOT}/fsname"
 . "${ROOT}/shell/units.sh"
 . "${ROOT}/shell/paths.sh"
+. "${ROOT}/shell/config.sh"
 
 BUILD=true
 START=true
 DAEMON_UNIT_TEMPLATE=${DAEMON_NAME}@.service
 
-# What a cold host mounts, for a run that finds nothing up yet.
+# What a cold host mounts, for a run that finds nothing up yet: the config's mounts.
 MOUNTS=()
 while read -r point; do MOUNTS+=("$point"); done < <(mounted_points)
 if [ ${#MOUNTS[@]} -eq 0 ]; then
-	MOUNTS=(/mnt/${FS_NAME})
+	while read -r point device; do MOUNTS+=("$point"); done < <(readSetting mounts)
 fi
 
 MODULE_SYSFS=/sys/module/${FS_NAME}
@@ -174,8 +175,8 @@ udevadm settle --timeout=5 >/dev/null 2>&1 || true
 # ── the helper unit ─────────────────────────────────────────────────────
 # Its unit is not a build product, but starting the one already installed would run a copy this
 # tree no longer describes. Rendering it here is the same swap the module above gets.
-"${ROOT}/tools/render-fsname.sh" "${ROOT}/daemon/deploy/daemon/daemon@.service.in" \
-	"/etc/systemd/system/${DAEMON_UNIT_TEMPLATE}"
+renderForAccount "${ROOT}/daemon/deploy/daemon/daemon@.service.in" "$(readSetting accounts.daemon)" \
+	>"/etc/systemd/system/${DAEMON_UNIT_TEMPLATE}"
 chmod 0644 "/etc/systemd/system/${DAEMON_UNIT_TEMPLATE}"
 systemctl daemon-reload
 

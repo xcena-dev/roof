@@ -101,7 +101,7 @@ void refuseUnregisteredName(fsdaemon::probe::Context& ctx)
 
 void refuseLockWithoutRegion(fsdaemon::probe::Context& ctx)
 {
-    // fromArgs leaves turn_region.uri empty, so the settings name no region to join.
+    // fromArgs leaves the turn uri empty, so the settings name no region to join.
     ctx.check(fsdaemon::makeTurnService(settingsNaming("probe", "local")) == nullptr,
               "settings naming no region serve no lock");
 }

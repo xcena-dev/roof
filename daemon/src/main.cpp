@@ -9,21 +9,17 @@
 #include <signal.h>  // NOLINT(modernize-deprecated-headers) sigaction is POSIX, not in <csignal>
 #include <unistd.h>
 
-#include <algorithm>
 #include <atomic>
-#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <memory>
-#include <optional>
-#include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 #include "audit/audit.hpp"
 #include "backends.hpp"
+#include "commands.hpp"
 #include "config/config.hpp"
 #include "observe/stat.hpp"
 #include "posix/notify.hpp"
@@ -71,63 +67,21 @@ void registerHandler(std::int32_t signalNumber)
 int main(int argc, char** argv)
 {
     const std::vector<std::string_view> args{argv, argv + argc};
-
-    if (std::find(args.begin(), args.end(), "--list-backends") != args.end())
+    if (const auto status = fsdaemon::runCommand(args))
     {
-        for (const auto& name : fsdaemon::getBackendNames())
-        {
-            std::fprintf(stdout, "%s\n", name.c_str());
-        }
-        return 0;
-    }
-
-    const auto configPath = fsdaemon::config::findOptionValue(args, "--config");
-
-    // The mount helper cannot read this daemon's config, so it runs the daemon to learn what laying
-    // out the lock region takes. One line on stdout, in the order cme-format takes its flags.
-    if (const auto target = fsdaemon::config::findOptionValue(args, "--print-region-format"); !target.empty())
-    {
-        try
-        {
-            const auto config = fsdaemon::config::Config::load(configPath);
-            const auto uri = config.getTurnUri().empty() ? fsdaemon::config::makeRegionUri(target)
-                                                         : config.getTurnUri();
-            std::fprintf(stdout, "--uri %s --max-peers %u --max-domains %u --strategy %s\n",
-                         uri.c_str(), config.getTurnMaxPeers(), config.getTurnMaxDomains(),
-                         config.getTurnStrategy().c_str());
-        }
-        catch (const std::exception& error)
-        {
-            std::fprintf(stderr, "daemon: %s\n", error.what());
-            return 1;
-        }
-        return 0;
-    }
-
-    const auto nodeText = fsdaemon::config::findOptionValue(args, "--node-id");
-
-    // Parsed rather than converted, because a node id that will not parse has to be refused: a
-    // silent fallback would serve the wrong channel with no sign that the flag was ignored.
-    std::optional<std::uint32_t> nodeOverride;
-    if (!nodeText.empty())
-    {
-        std::uint32_t parsedNode = 0;
-        const auto parsed = std::from_chars(nodeText.data(), nodeText.data() + nodeText.size(), parsedNode);
-        if (parsed.ec != std::errc{} || parsed.ptr != nodeText.data() + nodeText.size())
-        {
-            std::fprintf(stderr, "daemon: --node-id %s is not a node id\n", nodeText.c_str());
-            return 1;
-        }
-        nodeOverride = parsedNode;
+        return *status;
     }
 
     try
     {
-        // The effective settings come from daemon.yaml when --config is given, and from flags
+        // The effective settings come from config.yaml when --config is given, and from flags
         // otherwise, so a test or a hand run needs no config file.
+        const auto nodeOverride = fsdaemon::readNodeId(args);
+        const auto configPath = fsdaemon::config::findOptionValue(args, "--config");
         const auto config = configPath.empty()
                                 ? fsdaemon::config::Config::fromArgs(args, nodeOverride)
                                 : fsdaemon::config::Config::load(configPath, nodeOverride);
+        config.requireDaemonAccount();
 
         const auto identity = fsdaemon::makeIdentityProvider(config);
         const auto policy = fsdaemon::makePolicyEngine(config, *identity);
@@ -154,6 +108,13 @@ int main(int argc, char** argv)
         services.pool = &pool;
         services.audit = &audit;
         services.stat = &stat;
+        if (!config.getSourcePath().empty())
+        {
+            services.checkSettings = [&config]
+            {
+                config.checkReloadable();
+            };
+        }
         fsdaemon::serve::RequestHandler handler{services};
         if (!channel.sendHello(handler.getCapabilities(), static_cast<std::uint32_t>(::getpid())))
         {

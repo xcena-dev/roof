@@ -18,6 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/../.." && pwd)"
 . "${ROOT}/fsname"
 . "${ROOT}/shell/units.sh"
+. "${ROOT}/shell/config.sh"
 
 PURGE=0
 for arg in "$@"; do
@@ -31,6 +32,14 @@ done
 [[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
 
 log() { printf '[uninstall] %s\n' "$*"; }
+
+# Read while the daemon is still here to answer, since the binary goes below.
+DAEMON_USER="${FS_NAME}"
+POLICY_FILE="/etc/${FS_NAME}/policy.rego"
+if [[ -e "$CONFIG_FILE" && -x "$DAEMON_BIN" ]]; then
+  DAEMON_USER="$(readSetting accounts.daemon || echo "$DAEMON_USER")"
+  POLICY_FILE="$(readSetting policy.path || echo "$POLICY_FILE")"
+fi
 
 # A mount clears its rows on unmount under a turn only its daemon can take, so no daemon goes first.
 remaining="$(mounted_points)"
@@ -74,13 +83,11 @@ if [[ -d /run/${FS_NAME} ]]; then
 fi
 
 if [[ $PURGE -eq 1 ]]; then
-  log "--purge: the configs, the audit log and the helper user"
-  rm -f /etc/${FS_NAME}/daemon.yaml /etc/${FS_NAME}/policy.rego /etc/${FS_NAME}/identity-rules.yaml
-  # The examples an earlier revision of install.sh moved aside when it could not serve on them.
-  rm -f /etc/${FS_NAME}/*.bak
+  log "--purge: the config, the policy and the daemon account"
+  rm -f "$CONFIG_FILE" "$POLICY_FILE"
   rmdir /etc/${FS_NAME} 2>/dev/null || true
-  if id ${FS_NAME} &>/dev/null; then
-    userdel ${FS_NAME} || true
+  if id "$DAEMON_USER" &>/dev/null; then
+    userdel "$DAEMON_USER" || true
   fi
 fi
 

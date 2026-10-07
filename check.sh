@@ -283,9 +283,15 @@ missing_for_suite()
     done
 }
 
-# The identity rules the helper reads, and the daemon restarted onto them. Both are root's, so a
-# run that has to swap them asks for a password here.
-RULES_FILE="/etc/${FS_NAME}/identity-rules.yaml"
+# The config the helper reads its identity rules from, and the daemon restarted onto it. Both are
+# root's, so a run that has to swap the rules asks for a password here.
+RULES_FILE="/etc/${FS_NAME}/config.yaml"
+
+# @config without its rules block, which a planted run replaces whole.
+strip_rules()
+{
+    awk '/^rules:/ { skip = 1; next } skip && /^[^[:space:]#-]/ { skip = 0 } !skip' "$1"
+}
 
 # The account the daemon runs as, from the first unit that is loaded. Empty when none is.
 helper_account()
@@ -393,8 +399,10 @@ run_pathrule_cases()
         return
     fi
 
-    "$ROOT/tools/render-fsname.sh" "$ROOT/tests/postexec-rules.yaml.in" "$rendered"
-    sed -i "s|@APP_UID@|$(id -u)|g; s|@CASE_PATH@|${case_path}|g" "$rendered"
+    local rules="$BUILD_DIR/daemon-rules-block.yaml"
+    "$ROOT/tools/render-fsname.sh" "$ROOT/tests/postexec-rules.yaml.in" "$rules"
+    sed -i "s|@APP_UID@|$(id -u)|g; s|@CASE_PATH@|${case_path}|g" "$rules"
+    { strip_rules "$kept"; cat "$rules"; } > "$rendered"
 
     local account
     account="$(helper_account)"

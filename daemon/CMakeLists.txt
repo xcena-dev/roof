@@ -98,7 +98,7 @@ find_package(OpenSSL REQUIRED)
 target_link_libraries(daemon_core PRIVATE OpenSSL::Crypto)
 
 # ── Config and audit ────────────────────────────────────────────────────
-# config reads daemon.yaml with cme's header-only key-value reader, so it takes cme_common's include
+# config reads config.yaml with cme's header-only key-value reader, so it takes cme_common's include
 # path (no link). audit rides along here; it needs neither cme nor a heavy dependency.
 add_library(daemon_config STATIC
     src/config/config.cpp
@@ -276,6 +276,7 @@ target_link_libraries(daemon_backends PUBLIC daemon_core daemon_config PRIVATE d
 # that. Which registrations compile is the whole of which backends this build carries.
 add_executable(daemon
     src/main.cpp
+    src/commands.cpp
     src/identity/local_backend.cpp)
 target_link_libraries(daemon PRIVATE daemon_backends daemon_warnings)
 if(DAEMON_ENABLE_POLICY_REGORUS)

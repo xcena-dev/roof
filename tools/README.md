@@ -18,17 +18,19 @@ Three steps, and a failure after the first unmounts and exits 32.
 1. `mount(2)`, with `daemon_config=` stripped off the options 
 and `daemon_uid=`/`daemon_gid=` added from the daemon's own account, 
 picking the node id and binding the lock region to that account inside the call.
+The daemon account is the owner of the config file, 
+and a config owned by root is refused.
 2. `cme-format` on the lock region, with the arguments `<daemon> --print-region-format <dir>` prints, 
 run as the daemon account because step 1 is what closed the region to it.
 3. `systemctl start` on the daemon's unit for that node id, 
 and a wait of up to five seconds for `hello_done=1`.
 
 ```
-mount -t rooffs none /mnt/rooffs -o daxdev=/dev/dax0.0,daemon_config=/etc/rooffs/daemon.yaml
+mount -t rooffs none /mnt/rooffs -o daxdev=/dev/dax0.0,daemon_config=/etc/rooffs/config.yaml
 ```
 <!-- fsname -->
 
-`daemon_config=` defaults to `/etc/<fs>/daemon.yaml`, and `node_id=` names the slot to claim.
+`daemon_config=` defaults to `/etc/<fs>/config.yaml`, and `node_id=` names the slot to claim.
 `daemon_uid=` and `daemon_gid=` are the ones the helper fills in, 
 and a caller reaching `mount(2)` directly can set them itself, 
 with either id but not both left at the any-account sentinel.

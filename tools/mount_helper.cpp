@@ -15,8 +15,8 @@
 // A failure after stage 1 unmounts, so the caller sees a finished mount or none.
 //
 // The helper's own settings are not this helper's to choose. They live in the file
-// `-o daemon_config=` names, which an administrator writes and this helper only hands over, and
-// which the helper itself reads back for the format arguments.
+// `-o daemon_config=` names, which an administrator writes and this helper only hands over. Its
+// owner is the daemon account, and the daemon reads the format arguments back out of it.
 // These commands stay overridable, since they are how to invoke a tool rather than what to
 // configure:
 //   <FS>_DAEMON         the daemon binary, asked what the region needs
@@ -26,6 +26,7 @@
 
 #include <pwd.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 
 #include <cerrno>
 #include <chrono>
@@ -57,7 +58,7 @@ constexpr const char* FsType = FS_NAME_STR;
 constexpr std::string_view DaemonConfigOption = "daemon_config=";
 
 // Where the helper's config lives unless -o daemon_config= names another.
-constexpr std::string_view DefaultDaemonConfig = "/etc/" FS_NAME_STR "/daemon.yaml";
+constexpr std::string_view DefaultDaemonConfig = "/etc/" FS_NAME_STR "/config.yaml";
 
 // How long stage 2 waits on the daemon, and how often it looks.
 constexpr std::chrono::milliseconds DaemonWait{5000};
@@ -305,13 +306,29 @@ struct SplitOptions_t
 }
 
 // The account mount(2) closes the lock region to, which is therefore the only account that may
-// write the region afterwards.
-[[nodiscard]] std::optional<fstools::DaemonAccount_t> resolveDaemonAccount()
+// write the region afterwards. The config at @configPath is owned by that account, and the daemon
+// refuses to serve as anyone else, so the owner is the one answer both sides read.
+[[nodiscard]] std::optional<fstools::DaemonAccount_t> resolveDaemonAccount(const std::string& configPath)
 {
-    const auto* found = ::getpwnam(FS_NAME_STR);
+    struct ::stat info  // NOLINT(misc-include-cleaner) <sys/stat.h> above declares it
+    {
+    };
+    if (::stat(configPath.c_str(), &info) != 0)
+    {
+        std::fprintf(stderr, FS_PROGRAM_NAME ": %s: %s\n", configPath.c_str(), std::strerror(errno));
+        return std::nullopt;
+    }
+    if (info.st_uid == 0)
+    {
+        std::fprintf(stderr, FS_PROGRAM_NAME ": %s is owned by root, not by the daemon account\n",
+                     configPath.c_str());
+        return std::nullopt;
+    }
+    const auto* const found = ::getpwuid(info.st_uid);
     if (found == nullptr)
     {
-        std::fprintf(stderr, FS_PROGRAM_NAME ": no %s account to bind the lock region to\n", FS_NAME_STR);
+        std::fprintf(stderr, FS_PROGRAM_NAME ": %s is owned by uid %u, which names no account\n",
+                     configPath.c_str(), info.st_uid);
         return std::nullopt;
     }
 
@@ -345,7 +362,8 @@ int main(int argc, char** argv)
 
     // The kernel binds the lock region to this node's daemon account from inside mount(2) itself,
     // so the account has to travel with the mount rather than through a later call.
-    const auto daemonAccount = resolveDaemonAccount();
+    const auto configPath = parsed->daemonConfig.empty() ? std::string{DefaultDaemonConfig} : parsed->daemonConfig;
+    const auto daemonAccount = resolveDaemonAccount(configPath);
     if (!daemonAccount.has_value())
     {
         // Mounting without it would leave the region open to every account on this node.
@@ -377,7 +395,6 @@ int main(int argc, char** argv)
     //            maps the region to put the metadata domain in it before it greets the kernel
     if (nodeId.has_value())
     {
-        const auto configPath = parsed->daemonConfig.empty() ? std::string{DefaultDaemonConfig} : parsed->daemonConfig;
         const auto formatArgs = fstools::regionFormatArgs(configPath, parsed->target, daemonAccount);
         if (formatArgs.has_value() && fstools::formatLockRegion(*formatArgs, *daemonAccount) && startHelper(*nodeId))
         {

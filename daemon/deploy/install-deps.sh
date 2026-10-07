@@ -15,8 +15,10 @@
 #   sudo bash install-deps.sh --uninstall         # remove everything this installed
 #   sudo bash install-deps.sh --skip-runtime-smoke  # skip SPIRE end-to-end check
 #
-# Env: OPA_VERSION (default: v0.69.0), SPIRE_VERSION (default: latest),
-#      TRUST_DOMAIN (default: ${FS_NAME}.local)
+# Env: OPA_VERSION (default: v0.69.0), SPIRE_VERSION (default: latest)
+#
+# The trust domain, the sockets, the policy file and the daemon account come from
+# /etc/${FS_NAME}/config.yaml, or the example's defaults before install.sh has planted one.
 
 set -euo pipefail
 
@@ -25,12 +27,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 . "${ROOT}/fsname"
+. "${ROOT}/shell/config.sh"
 SPIRE_CFG_SRC="$SCRIPT_DIR/identity"
+
+# @key from the host config, or @fallback while there is none to read.
+settingOr() {
+  local key="$1" fallback="$2"
+  if [[ -e "$CONFIG_FILE" && -x "$DAEMON_BIN" ]] && readSetting "$key" 2>/dev/null; then
+    return
+  fi
+  printf '%s\n' "$fallback"
+}
 
 # ─── tunables ─────────────────────────────────────────────────────────────
 OPA_VERSION="${OPA_VERSION:-v0.69.0}"
 SPIRE_VERSION="${SPIRE_VERSION:-}"   # empty → query GitHub latest
-TRUST_DOMAIN="${TRUST_DOMAIN:-${FS_NAME}.local}"
+TRUST_DOMAIN="$(settingOr spire.trust_domain "${FS_NAME}.local")"
+SPIRE_SERVER_ADDRESS="$(settingOr spire.server_address 127.0.0.1)"
+SPIRE_SERVER_PORT="$(settingOr spire.server_port 8081)"
+SPIRE_ADMIN_SOCKET="$(settingOr spire.admin_socket /run/spire-agent/admin/api.sock)"
+DAEMON_ACCOUNT="$(settingOr accounts.daemon "${FS_NAME}")"
+POLICY_FILE_RUNTIME="$(settingOr policy.path "/etc/${FS_NAME}/policy.rego")"
+OPA_SOCKET="$(settingOr policy.opa_socket "/run/${FS_NAME}-opa/api.sock")"
 
 # ─── flags ────────────────────────────────────────────────────────────────
 DO_OPA=1
@@ -187,11 +205,20 @@ install_spire() {
   for pair in \
         "$SPIRE_CFG_SRC/spire-server.example.conf:/etc/spire/server/server.conf" \
         "$SPIRE_CFG_SRC/spire-agent.example.conf:/etc/spire/agent/agent.conf"; do
-    local src="${pair%:*}" dst="${pair#*:}"
+    local src="${pair%:*}" dst="${pair#*:}" rendered
     if [[ -f "$dst" && $FORCE_CFG -ne 1 ]]; then
       info "preserving existing $dst (use --force to overwrite)"
     else
-      install -m 644 "$src" "$dst"
+      rendered="$(mktemp)"
+      sed -e "s|@TRUST_DOMAIN@|${TRUST_DOMAIN}|g" \
+          -e "s|@SERVER_ADDRESS@|${SPIRE_SERVER_ADDRESS}|g" \
+          -e "s|@SERVER_PORT@|${SPIRE_SERVER_PORT}|g" \
+          -e "s|@ADMIN_SOCKET@|${SPIRE_ADMIN_SOCKET}|g" \
+          -e "s|@DAEMON_NAME@|${DAEMON_NAME}|g" \
+          -e "s|@FS_NAME@|${FS_NAME}|g" \
+          "$src" > "$rendered"
+      install -m 644 "$rendered" "$dst"
+      rm -f "$rendered"
       info "installed $dst"
     fi
   done
@@ -247,21 +274,20 @@ check_toolchain() {
 BRINGUP_STATE_DIR="${BRINGUP_STATE_DIR:-/run/${FS_NAME}-bridges}"
 BRINGUP_SERVER_DIR="${BRINGUP_SERVER_DIR:-/tmp/spire-server}"
 BRINGUP_AGENT_DIR="${BRINGUP_AGENT_DIR:-/tmp/spire-agent}"
-BRINGUP_SERVER_PORT="${BRINGUP_SERVER_PORT:-8081}"
+BRINGUP_SERVER_PORT="${BRINGUP_SERVER_PORT:-${SPIRE_SERVER_PORT}}"
 # A path and not a port, for the same reason the unit uses one: /run is root's, so no other
-# account can answer in OPA's place. Matches the daemon's policy_socket default.
-BRINGUP_OPA_DIR="${BRINGUP_OPA_DIR:-/run/${FS_NAME}-opa}"
-BRINGUP_OPA_SOCK="$BRINGUP_OPA_DIR/api.sock"
+# account can answer in OPA's place. The one the config names.
+BRINGUP_OPA_SOCK="$OPA_SOCKET"
+BRINGUP_OPA_DIR="$(dirname "$OPA_SOCKET")"
 BRINGUP_SERVER_SOCK="$BRINGUP_SERVER_DIR/private/api.sock"
 # Use /run, not /tmp: the helper unit has PrivateTmp=true so sockets
 # under /tmp would be invisible to it.
 # SPIRE 1.14+: Delegated Identity API is on admin_socket_path only.
 BRINGUP_WORKLOAD_DIR="/run/spire-agent/public"
 BRINGUP_WORKLOAD_SOCK="$BRINGUP_WORKLOAD_DIR/api.sock"
-BRINGUP_ADMIN_DIR="/run/spire-agent/admin"
-BRINGUP_ADMIN_SOCK="$BRINGUP_ADMIN_DIR/api.sock"  # matches daemon.yaml default
+BRINGUP_ADMIN_SOCK="$SPIRE_ADMIN_SOCKET"
+BRINGUP_ADMIN_DIR="$(dirname "$SPIRE_ADMIN_SOCKET")"
 BRINGUP_AGENT_PARENT_ID="spiffe://$TRUST_DOMAIN/agent/$(hostname)"
-POLICY_FILE_RUNTIME="${POLICY_FILE_RUNTIME:-/etc/${FS_NAME}/policy.rego}"
 
 bringup_pidalive() { [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
@@ -309,7 +335,7 @@ EOF
 bringup_helper_uid() {
   # The uid comes from the account install.sh creates and the unit's User= names.
   # A process name proves nothing, because any user can set it.
-  local helperUser="${HELPER_USER:-${FS_NAME}}" helperUid
+  local helperUser="$DAEMON_ACCOUNT" helperUid
   helperUid=$(id -u "$helperUser" 2>/dev/null) || die "daemon account $helperUser does not exist"
   [[ "$helperUid" != 0 ]] || die "daemon account $helperUser resolves to root"
   printf '%s\n' "$helperUid"
@@ -406,8 +432,8 @@ bringup_opa() {
   # root's and traversable by the daemon's group alone, so nothing else on this host can put an
   # endpoint at that name or query the one that is there.
   local opaGroup=root opaDirMode=0700
-  if getent group "${FS_NAME}" >/dev/null; then
-    opaGroup="${FS_NAME}"
+  if id "$DAEMON_ACCOUNT" >/dev/null 2>&1; then
+    opaGroup="$(id -gn "$DAEMON_ACCOUNT")"
     opaDirMode=0750
   fi
   # A socket a killed run left behind would make the bind fail, so it goes first.
@@ -540,13 +566,16 @@ install_systemd() {
   local opaGroupLine="# Group: run tools/deploy/install.sh, then reinstall this with --force"
   local opaDirMode="0700"
   local opaMask="0077"
-  if getent group "${FS_NAME}" >/dev/null; then
-    opaGroupLine="Group=${FS_NAME}"
+  if id "$DAEMON_ACCOUNT" >/dev/null 2>&1; then
+    opaGroupLine="Group=$(id -gn "$DAEMON_ACCOUNT")"
     opaDirMode="0750"
     opaMask="0007"
   else
-    warn "no ${FS_NAME} group yet, so OPA's socket stays root's and the daemon cannot reach it"
+    warn "no ${DAEMON_ACCOUNT} account yet, so OPA's socket stays root's and the daemon cannot reach it"
   fi
+  # systemd makes the directory under /run that the socket sits in.
+  [[ "$BRINGUP_OPA_DIR" == /run/* ]] || die "policy.opa_socket ${OPA_SOCKET} is not under /run"
+  local opaRuntimeDir="${BRINGUP_OPA_DIR#/run/}"
 
   # Unquoted delimiter: every $ in this unit (FS_NAME and the opa* locals above) must resolve
   # before the file is written, unlike the quoted heredocs below.
@@ -561,10 +590,10 @@ After=network.target
 ${opaGroupLine}
 # A path under /run and not a port: /run is root's, so no other account can hold the endpoint
 # first, and nothing in the exchange would tell the real server from one that did.
-RuntimeDirectory=${FS_NAME}-opa
+RuntimeDirectory=${opaRuntimeDir}
 RuntimeDirectoryMode=${opaDirMode}
 UMask=${opaMask}
-ExecStart=/usr/local/bin/opa run --server --addr unix:///run/${FS_NAME}-opa/api.sock /etc/${FS_NAME}/policy.rego
+ExecStart=/usr/local/bin/opa run --server --addr unix://${OPA_SOCKET} ${POLICY_FILE_RUNTIME}
 Restart=on-failure
 RestartSec=2
 
@@ -676,7 +705,7 @@ ${C_BOLD}Next steps${C_RST}
     install or rerun install.sh --reset-cfg to overwrite.
   • Local policy backend uses the in-process ``regorus`` library (no opa
     binary needed). Skip OPA install with --spire-only unless you actually
-    plan to run ``backends.policy = "opa"`` against an OPA daemon.
+    plan to run ``policy.backend: opa`` against an OPA daemon.
   • Start OPA (only if running the bridge backend):
                                          sudo systemctl start opa
   • Start SPIRE server then agent (after generating a join token — see the

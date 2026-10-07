@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# Every setting this host deploys and runs @FS_NAME@ with (example). install.sh renders and plants it.
+# A SIGHUP re-reads the rules and the policy, and refuses an edit to any other key the daemon reads.
+
+# The daemon runs as accounts.daemon, which owns this file. The applications run as accounts.workload.
+accounts:
+  daemon: @FS_NAME@
+  workload: @APP_USER@
+
+# One entry per mount point. Mounts may share a DAX device or each sit on their own.
+mounts:
+@MOUNTS@
+
+# Both backends are file-driven here, needing neither SPIRE nor OPA. Picking spire or opa without
+# that service running turns every attest into a failure.
+identity:
+  backend: local
+  # Kinds a rule may match on: uid, gid, supplementary_gid, path, sha256.
+  selectors: [uid, path]
+
+policy:
+  backend: local
+  # A bare filename resolves next to this file.
+  path: policy.rego
+  # The package the policy declares. The OPA data path is built from it.
+  package: @FS_NAME@.authz
+  opa_socket: /run/@FS_NAME@-opa/api.sock
+
+spire:
+  trust_domain: @FS_NAME@.local
+  admin_socket: /run/spire-agent/admin/api.sock
+  server_address: 127.0.0.1
+  server_port: 8081
+
+audit:
+  target: stdout
+  log_decisions: true
+
+upcall:
+  request_timeout: 4s
+  # Times each stage of an answer and reports means every 200 answers. Off reads no clock.
+  trace_turns: false
+  # Threads that answer off the serve loop, used only by a backend that waits on a socket.
+  workers: 4
+
+# The first rule that matches wins, and a task no rule matches is refused. Each rule's SPIFFE id is
+# spiffe://<spire.trust_domain>/group/<group>/role/<role>.
+rules:
+  - match:
+      uid: @APP_UID@
+    identity:
+      group: prod
+      role: llm-worker
+
+  # One binary under that account and no other:
+  # - match:
+  #     uid: 1004
+  #     path: /usr/local/bin/vllm
+  #   identity:
+  #     group: prod
+  #     role: llm-worker

@@ -26,10 +26,11 @@ namespace fsdaemon::identity
 class LocalIdentityProvider : public IdentityProvider
 {
 public:
-    // @rulesPath may be empty or absent, which is a backend that resolves nothing rather than a
-    // fault. @selectorNames is the config list of kinds the rules may match on, empty for the
-    // default set. Loads the rules at construction, so an unknown name throws from here.
-    LocalIdentityProvider(std::string rulesPath, const std::vector<std::string>& selectorNames);
+    // @rulesPath may be empty or absent, which resolves nothing rather than faults. @selectorNames
+    // is the kinds the rules may match on, and @trustDomain the one each rule's SPIFFE id names.
+    // Loads the rules at construction, so an unknown name throws from here.
+    LocalIdentityProvider(std::string rulesPath, const std::vector<std::string>& selectorNames,
+                          std::string trustDomain = {});
 
     [[nodiscard]] Identity_t attest(pid_t pid, const Creds_t& facts) override;
 
@@ -42,6 +43,9 @@ public:
     // Re-reads the rules file. A parse error or an unsafe file keeps the rules already loaded, so a
     // bad edit does not empty the backend under a running daemon.
     void reload() override;
+
+    // Throws on the parse error or the unsafe file reload() would keep the old rules over.
+    void checkReload() const override;
 
     // Out of line, so the rule record stays inside the backend's own translation unit.
     ~LocalIdentityProvider() override;

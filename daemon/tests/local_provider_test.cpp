@@ -9,6 +9,7 @@
 
 #include <unistd.h>
 
+#include <exception>
 #include <string>
 
 #include "harness/creds.hpp"
@@ -109,22 +110,62 @@ void refuseNoMatchingRule(fsdaemon::probe::Context& ctx)
     ctx.check(threw, "a pid no rule matches is refused");
 }
 
-void checkSpiffeGroupRole(fsdaemon::probe::Context& ctx)
+std::string makeSelfRule(const std::string& identityRows)
 {
-    const std::string rules =
-        "rules:\n"
-        "  - match:\n"
-        "      uid: " +
-        std::to_string(::getuid()) +
-        "\n"
-        "    identity:\n"
-        "      spiffe_id: spiffe://test.local/group/g9/role/reader\n";
-    const TempFile file{rules, "daemon-rules"};
-    LocalIdentityProvider provider{file.getPath(), {}};
+    return "rules:\n"
+           "  - match:\n"
+           "      uid: " +
+           std::to_string(::getuid()) +
+           "\n"
+           "    identity:\n" +
+           identityRows;
+}
+
+void checkSpiffeIdDerived(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{makeSelfRule("      group: g9\n      role: reader\n"), "daemon-rules"};
+    LocalIdentityProvider provider{file.getPath(), {}, "test.local"};
 
     const Identity_t identity = provider.attest(::getpid(), factsForSelf());
-    ctx.check(identity.group == "g9" && identity.role == "reader",
-              "group and role fill in from the spiffe id");
+    ctx.check(identity.spiffeId == "spiffe://test.local/group/g9/role/reader",
+              "the spiffe id is issued from the trust domain, the group and the role");
+}
+
+bool passesReloadCheck(const LocalIdentityProvider& provider)
+{
+    try
+    {
+        provider.checkReload();
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+    return true;
+}
+
+void checkReloadCheck(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{makeSelfRule("      group: prod\n"), "daemon-rules"};
+    LocalIdentityProvider provider{file.getPath(), {}};
+    ctx.check(passesReloadCheck(provider), "a file that parses passes the check");
+
+    file.rewrite("rules:\n  - match:\n      uid: not-a-number\n    identity:\n      group: broken\n");
+    ctx.check(!passesReloadCheck(provider), "an edit reload() would keep the old rules over fails the check");
+    const Identity_t identity = provider.attest(::getpid(), factsForSelf());
+    ctx.check(identity.group == "prod", "and the check swaps nothing in");
+}
+
+void refuseWrittenSpiffeId(fsdaemon::probe::Context& ctx)
+{
+    const TempFile file{makeSelfRule("      group: prod\n"), "daemon-rules"};
+    LocalIdentityProvider provider{file.getPath(), {}, "test.local"};
+
+    // A written id would be a second spelling of the group and role, free to disagree with them.
+    file.rewrite(makeSelfRule("      spiffe_id: spiffe://test.local/group/g9/role/reader\n"));
+    provider.reload();
+    const Identity_t identity = provider.attest(::getpid(), factsForSelf());
+    ctx.check(identity.group == "prod", "a rule writing its own spiffe id refuses the file");
 }
 
 void checkReloadKeepsRules(fsdaemon::probe::Context& ctx)
@@ -234,7 +275,9 @@ int main()
             checkHashingSetNeedsWorker(ctx);
             refuseNoMatchingRule(ctx);
             checkUnnamedKindRuleDrop(ctx);
-            checkSpiffeGroupRole(ctx);
+            checkSpiffeIdDerived(ctx);
+            refuseWrittenSpiffeId(ctx);
+            checkReloadCheck(ctx);
             checkReloadKeepsRules(ctx);
             checkTopLevelKeysExcluded(ctx);
             refuseMisspelledSection(ctx);

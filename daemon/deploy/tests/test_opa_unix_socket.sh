@@ -18,7 +18,7 @@ ROOT="$(cd "${DEPLOY}/../.." && pwd)"
 . "${ROOT}/fsname"
 
 INSTALL_DEPS="${DEPLOY}/install-deps.sh"
-CONFIG_TEMPLATE="${DEPLOY}/daemon/daemon.example.yaml.in"
+CONFIG_TEMPLATE="${DEPLOY}/daemon/config.example.yaml.in"
 HELPER_UNIT_TEMPLATE="${DEPLOY}/daemon/daemon@.service.in"
 
 pass() { printf 'PASS %s\n' "$*"; }
@@ -38,10 +38,11 @@ caseUnitNamesASocket() {
   block="$(sed -n '/^install_systemd()/,/^}/p' "$INSTALL_DEPS")"
 
   # The name is still a shell variable in the source, so these match the text and not the value.
-  if [[ "$block" == *'--addr unix:///run/${FS_NAME}-opa/api.sock'* ]]; then
-    pass "the OPA unit listens on ${SOCKET_PATH}"
+  if [[ "$block" == *'--addr unix://${OPA_SOCKET}'* ]] &&
+     grep -qF 'OPA_SOCKET="$(settingOr policy.opa_socket "/run/${FS_NAME}-opa/api.sock")"' "$INSTALL_DEPS"; then
+    pass "the OPA unit listens on the config's socket, ${SOCKET_PATH} by default"
   else
-    fail "the OPA unit listens on ${SOCKET_PATH}"
+    fail "the OPA unit listens on the config's socket, ${SOCKET_PATH} by default"
   fi
 
   if [[ "$block" != *"--addr 127.0.0.1"* ]]; then
@@ -50,7 +51,7 @@ caseUnitNamesASocket() {
     fail "the OPA unit names no loopback port"
   fi
 
-  if [[ "$block" == *'RuntimeDirectory=${FS_NAME}-opa'* ]]; then
+  if [[ "$block" == *'RuntimeDirectory=${opaRuntimeDir}'* ]]; then
     pass "systemd owns the directory the endpoint sits in"
   else
     fail "systemd owns the directory the endpoint sits in"
@@ -74,7 +75,7 @@ caseBringUpNamesTheSameSocket() {
     fail "the bring-up health check goes over that socket"
   fi
 
-  if grep -qF 'BRINGUP_OPA_DIR="${BRINGUP_OPA_DIR:-/run/${FS_NAME}-opa}"' "$INSTALL_DEPS"; then
+  if grep -qF 'BRINGUP_OPA_SOCK="$OPA_SOCKET"' "$INSTALL_DEPS"; then
     pass "the bring-up endpoint is the one the config names"
   else
     fail "the bring-up endpoint is the one the config names"
@@ -83,7 +84,7 @@ caseBringUpNamesTheSameSocket() {
 
 # The daemon has to be pointed at the endpoint, and has to be allowed to reach it.
 caseDaemonIsPointedAtIt() {
-  if grep -q "^policy_socket: *${SOCKET_PATH//\//\\/}$" \
+  if grep -q "^  opa_socket: *${SOCKET_PATH//\//\\/}$" \
        <(sed "s|@FS_NAME@|${FS_NAME}|g" "$CONFIG_TEMPLATE"); then
     pass "the shipped config names ${SOCKET_PATH}"
   else

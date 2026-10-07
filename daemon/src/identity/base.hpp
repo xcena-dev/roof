@@ -69,6 +69,12 @@ public:
     // Re-read the backend's source. A failure keeps whatever was already loaded.
     virtual void reload() = 0;
 
+    // Throws when the next reload() would fail, and changes nothing loaded. A backend with no source
+    // of its own to re-read has nothing to check.
+    virtual void checkReload() const
+    {
+    }
+
 protected:
     // @selectorNames is the config list of kinds this backend resolves on, empty for the default
     // set. Every backend needs one, so the set is built here rather than in each of them.

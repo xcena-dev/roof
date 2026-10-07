@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# test_config_reload -- an edit under /etc reaches a running daemon on SIGHUP.
+# test_config_reload -- an edit under /etc reaches a running daemon on SIGHUP, or is refused whole.
 #
-# The daemon reads its identity rules and its policy where they are. Each half adds one comment to
-# one file, sends SIGHUP to one instance and waits for that instance's load line to name the new size.
-# It then puts the file back and waits for the old size. A comment changes the size and no decision.
+# Each half edits one file, sends SIGHUP to one instance and waits for the line that reload logs,
+# then puts the file back and waits again. A comment changes the size and no decision.
 #
 #   ctest --test-dir <build> -R test_config_reload
 
@@ -20,11 +19,15 @@ pass() { printf 'PASS %s\n' "$*"; PASSED=$((PASSED + 1)); }
 fail() { printf 'FAIL %s\n' "$*"; FAILED=$((FAILED + 1)); }
 skip() { printf 'SKIP %s\n' "$*"; exit 77; }
 
-CONFIG_DIR="/etc/${FS_NAME}"
-[[ -d "$CONFIG_DIR" ]] || skip "${CONFIG_DIR} is not there, so this host carries no deployment"
-sudo -n true 2> /dev/null || skip "editing ${CONFIG_DIR} needs sudo without a password"
+CONFIG="/etc/${FS_NAME}/config.yaml"
+[[ -f "$CONFIG" ]] || skip "${CONFIG} is not there, so this host carries no deployment"
+sudo -n true 2> /dev/null || skip "editing ${CONFIG} needs sudo without a password"
 UNIT="$(systemctl list-units --no-legend --plain --state=active "${DAEMON_NAME}@*.service" 2> /dev/null | awk 'NR == 1 {print $1}')"
 [[ -n "$UNIT" ]] || skip "no ${DAEMON_NAME} instance is running"
+
+DAEMON="$(command -v "${DAEMON_NAME}" || printf '/usr/local/bin/%s' "${DAEMON_NAME}")"
+# The file's owner is the daemon account, the one account the daemon takes its config from.
+OWNER="$(sudo stat -c '%U' "$CONFIG")"
 
 PASSED=0
 FAILED=0
@@ -40,6 +43,10 @@ putBack() {
   rm -rf "$SCRATCH"
 }
 trap putBack EXIT
+
+askDaemon() {
+  sudo -u "$OWNER" "$DAEMON" --config "$CONFIG" "$@"
+}
 
 # The journal position of the unit's last line, so a wait reads only what the next reload logs.
 readCursor() {
@@ -58,51 +65,82 @@ awaitLine() {
   return 1
 }
 
-# Sends SIGHUP to the unit's main process and checks that a load line tagged @tag names @bytes.
+# Sends SIGHUP to the unit's main process and checks that a line after it matches @pattern.
 reloadAndCheck() {
-  local tag="$1" bytes="$2" what="$3" cursor
+  local pattern="$1" what="$2" cursor
   cursor="$(readCursor)"
   if [[ -z "$cursor" ]]; then
-    fail "${what}: the journal holds no line for ${UNIT}, so no load line can be read"
+    fail "${what}: the journal holds no line for ${UNIT}, so no reload line can be read"
     return
   fi
   sudo systemctl kill --kill-whom=main -s HUP "$UNIT"
-  if awaitLine "$cursor" "^\[${tag}\] loaded .*\(${bytes} bytes\)"; then
+  if awaitLine "$cursor" "$pattern"; then
     pass "$what"
   else
     fail "$what"
   fi
 }
 
-# One half: edit @target by a comment, reload, put it back, reload again.
-checkFile() {
-  local target="$1" tag="$2" original edited
-  original="$(stat -c '%s' "$target")"
+keepCopy() {
+  local target="$1"
   if ! sudo cp -p "$target" "${SCRATCH}/$(basename "$target")"; then
     fail "${target}: could not keep a copy to put back"
-    return
+    return 1
   fi
   CHANGED="$target"
-  # The leading newline keeps the comment off a last line that has none, where it would join that value.
-  printf '\n# test_config_reload %s\n' "$(date +%s%N)" | sudo tee -a "$target" > /dev/null
-  edited="$(stat -c '%s' "$target")"
-  reloadAndCheck "$tag" "$edited" "${target}: SIGHUP after an edit loads the edited file (${edited} bytes)"
+}
 
-  sudo cp -p "${SCRATCH}/$(basename "$target")" "$target"
+restore() {
+  sudo cp -p "${SCRATCH}/$(basename "$1")" "$1"
   CHANGED=""
-  reloadAndCheck "$tag" "$original" "${target}: SIGHUP after putting it back loads the original (${original} bytes)"
 }
 
-# Only the file-driven backends read these files, so a half whose backend is another one is not run.
-backendIs() {
-  sudo grep -qE "^[[:space:]]*$1:[[:space:]]*local" "${CONFIG_DIR}/daemon.yaml"
+# @target edited by a comment and put back, each followed by a load line @prefix names at that size.
+# The leading newline keeps the comment off a last line that has none, where it would join that value.
+checkCommentEdit() {
+  local target="$1" prefix="$2" original edited
+  original="$(sudo stat -c '%s' "$target")"
+  keepCopy "$target" || return
+  printf '\n# test_config_reload %s\n' "$(date +%s%N)" | sudo tee -a "$target" > /dev/null
+  edited="$(sudo stat -c '%s' "$target")"
+  reloadAndCheck "${prefix}.*\(${edited} bytes\)" "${target}: SIGHUP after an edit loads the edited file (${edited} bytes)"
+  restore "$target"
+  reloadAndCheck "${prefix}.*\(${original} bytes\)" "${target}: SIGHUP after putting it back loads the original (${original} bytes)"
 }
 
-if backendIs identity; then
-  checkFile "${CONFIG_DIR}/identity-rules.yaml" identity-local
+# A key the daemon was built from, set to a value it does not run with. The reload is refused and
+# names the key, and putting the file back loads it again.
+checkRestartKey() {
+  local original
+  if sudo grep -qE '^turn:' "$CONFIG"; then
+    printf 'SKIP %s already holds a turn block, so no key can be added without editing one\n' "$CONFIG"
+    return
+  fi
+  original="$(sudo stat -c '%s' "$CONFIG")"
+  keepCopy "$CONFIG" || return
+  printf '\nturn:\n  strategy: ticket\n' | sudo tee -a "$CONFIG" > /dev/null
+  reloadAndCheck '^\[config\] reload refused \(turn\.strategy changed' \
+    "${CONFIG}: SIGHUP after a restart key changes refuses the reload and names the key"
+  restore "$CONFIG"
+  reloadAndCheck "^\[identity-local\] loaded .*\(${original} bytes\)" \
+    "${CONFIG}: SIGHUP after putting it back loads it again (${original} bytes)"
+}
+
+identityBackend="$(askDaemon --print-config identity.backend)"
+policyBackend="$(askDaemon --print-config policy.backend)"
+
+if [[ "$identityBackend" == local ]]; then
+  # The rule count the file holds now, which a comment must leave as it is.
+  rules="$(askDaemon --check-config 2>&1 | sed -n 's/^\[identity-local\] loaded \([0-9]*\) rules.*/\1/p' | head -n 1)"
+  if [[ -z "$rules" ]]; then
+    fail "${CONFIG}: --check-config logged no rule count"
+  else
+    checkCommentEdit "$CONFIG" "^\[identity-local\] loaded ${rules} rules "
+  fi
+  checkRestartKey
 fi
-if backendIs policy; then
-  checkFile "${CONFIG_DIR}/policy.rego" policy-local
+if [[ "$policyBackend" == local ]]; then
+  checkCommentEdit "$(askDaemon --print-config policy.path)" '^\[policy-local\] loaded '
 fi
 
 if [[ $FAILED -eq 0 && $PASSED -eq 0 ]]; then

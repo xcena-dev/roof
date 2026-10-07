@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string_view>
 
 namespace fsdaemon::identity
@@ -58,6 +59,9 @@ struct Services_t
     audit::AuditLogger* audit{nullptr};
     // Without one, no clock is read.
     observe::Stat* stat{nullptr};
+    // Throws when the settings file holds an edit a reload cannot apply. Without one, a reload
+    // checks only the backends.
+    std::function<void()> checkSettings{};
 };
 
 class RequestHandler
@@ -74,7 +78,8 @@ public:
     // only once a turn service backs it, so the kernel does not queue a lock nobody will take.
     [[nodiscard]] std::uint64_t getCapabilities() const noexcept;
 
-    // Re-reads the identity backend and the policy, on a SIGHUP.
+    // Re-reads the identity backend and the policy, on a SIGHUP. Every check runs before anything is
+    // swapped, so a refused edit leaves all of what was loaded in place.
     void reloadBackends() noexcept;
 
 private:
@@ -99,6 +104,7 @@ private:
     WorkerPool* pool_;
     audit::AuditLogger* audit_;
     observe::Stat* stat_;
+    std::function<void()> checkSettings_;
     bool usesWorker_{false};
 };
 
