@@ -96,7 +96,7 @@ A deny is `-EACCES`.
 | `FS_IOC_PERM_SET_DEFAULT` | W | `fs_perm_req` | `ADMIN` |
 | `FS_IOC_PERM_REVOKE` | W | `fs_perm_req` | Nothing for a row naming the caller. `ADMIN` for any other. |
 | `FS_IOC_CACHE_SET` | W | `fs_cache_req` | `IOCTL`. Refused with `-EBUSY` once the region is placed. |
-| `FS_IOC_CACHE_GET` | R | `fs_cache_req` | `IOCTL` |
+| `FS_IOC_CACHE_GET` | R | `fs_cache_req` | Nothing. It names only the pool the file sits in. |
 
 ## What the Module Reports
 

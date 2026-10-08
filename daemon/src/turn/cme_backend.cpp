@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "backends.hpp"
-#include "cme/shared.hpp"
 #include "config/config.hpp"
 #include "turn/internal/cme_turn.hpp"
 #include "turn/service.hpp"
@@ -25,8 +24,7 @@ const auto RegisteredCmeTurn = fsdaemon::registerTurnBackend(
     [](const fsdaemon::config::Config& config) -> std::unique_ptr<fsdaemon::turn::TurnService>
     {
         return std::make_unique<fsdaemon::turn::CmeTurn>(
-            config.getTurnUri(), cme::CoherencyMode::Uncached,
-            std::vector<std::string>{std::string{FS_DOMAIN_META}});
+            config.getTurnUri(), std::vector<std::string>{std::string{FS_DOMAIN_META}});
     });
 
 }  // namespace

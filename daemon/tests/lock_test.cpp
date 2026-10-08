@@ -69,8 +69,8 @@ void checkTurnExclusion(fsdaemon::probe::Context& ctx)
     const std::string uri = formatRegion(region.getPath());
     const std::vector<std::string> domains{"turn.d"};
 
-    CmeTurn nodeA{uri, cme::CoherencyMode::CacheCoherent, domains};
-    CmeTurn nodeB{uri, cme::CoherencyMode::CacheCoherent, domains};
+    CmeTurn nodeA{uri, domains};
+    CmeTurn nodeB{uri, domains};
 
     ctx.check(takeWithin(nodeA, "turn.d", std::chrono::seconds{2}), "node A takes the domain");
     ctx.check(nodeA.holds("turn.d"), "node A holds it");
@@ -86,7 +86,7 @@ void refuseDoubleLock(fsdaemon::probe::Context& ctx)
 {
     const TempFile region{"", "daemon-turn"};
     const std::string uri = formatRegion(region.getPath());
-    CmeTurn node{uri, cme::CoherencyMode::CacheCoherent, std::vector<std::string>{"turn.d"}};
+    CmeTurn node{uri, std::vector<std::string>{"turn.d"}};
 
     ctx.check(takeWithin(node, "turn.d", std::chrono::seconds{2}), "the domain is taken");
     ctx.check(!node.tryAcquireHere("turn.d"),
@@ -102,7 +102,7 @@ void checkRepeatedUnlock(fsdaemon::probe::Context& ctx)
 {
     const TempFile region{"", "daemon-turn"};
     const std::string uri = formatRegion(region.getPath());
-    CmeTurn node{uri, cme::CoherencyMode::CacheCoherent, std::vector<std::string>{"turn.d", "turn.e"}};
+    CmeTurn node{uri, std::vector<std::string>{"turn.d", "turn.e"}};
 
     ctx.check(takeOnWaiter(node, "turn.d") == 0, "the waiter takes the domain");
     ctx.check(node.release("turn.d"), "the first unlock hands the drop to the waiter");

@@ -79,7 +79,7 @@ void checkLockUnlockLoop(fsdaemon::probe::Context& ctx)
 
     const TempFile region{"", "daemon-serve-turn"};
     const std::string uri = makeRegion(region.getPath());
-    fsdaemon::turn::CmeTurn turn{uri, cme::CoherencyMode::CacheCoherent, std::vector<std::string>{"turn.d"}};
+    fsdaemon::turn::CmeTurn turn{uri, std::vector<std::string>{"turn.d"}};
 
     fsdaemon::identity::LocalIdentityProvider identity{"", std::vector<std::string>{}};
     WorkerPool pool{2};
@@ -142,8 +142,8 @@ void checkWaitedLockRecorded(fsdaemon::probe::Context& ctx)
     const TempFile region{"", "daemon-serve-turn"};
     const std::string uri = makeRegion(region.getPath());
     const std::vector<std::string> domains{"turn.d"};
-    fsdaemon::turn::CmeTurn other{uri, cme::CoherencyMode::CacheCoherent, domains};
-    fsdaemon::turn::CmeTurn turn{uri, cme::CoherencyMode::CacheCoherent, domains};
+    fsdaemon::turn::CmeTurn other{uri, domains};
+    fsdaemon::turn::CmeTurn turn{uri, domains};
     if (!ctx.check(holdWithin(other, "turn.d", std::chrono::seconds{2}), "another node holds the domain"))
     {
         return;

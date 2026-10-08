@@ -796,8 +796,8 @@ static s32 file_ioctl_cache_get(struct fs_sb_info *sbi, const struct fs_inode_in
 	return 0;
 }
 
-/* Required perm for an ioctl precheck. Zero when the handler checks next to its own write, since
- * the two permission writers must not check and then write on stale state. */
+/* Required perm for an ioctl precheck. Zero where none belongs here: the permission writers check
+ * next to their own write, the ask is itself the check, and the pool query names only the pool. */
 static u16 file_ioctl_required_perm(unsigned int cmd)
 {
 	switch (cmd) {
@@ -805,7 +805,8 @@ static u16 file_ioctl_required_perm(unsigned int cmd)
 	case FS_IOC_PERM_REVOKE:
 	case FS_IOC_PERM_SET_DEFAULT:
 	case FS_IOC_PERM_ASK:
-		return 0; /* handler self-checks, and the ask is itself the check */
+	case FS_IOC_CACHE_GET:
+		return 0;
 	default:
 		return FS_PERM_IOCTL;
 	}

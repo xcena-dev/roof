@@ -32,7 +32,7 @@ constexpr auto TryBudget = std::chrono::microseconds{50};
 
 }  // namespace
 
-CmeTurn::CmeTurn(std::string uri, cme::CoherencyMode coherency, const std::vector<std::string>& domains)
+CmeTurn::CmeTurn(std::string uri, const std::vector<std::string>& domains)
     : uri_{std::move(uri)}
 {
     waiter_ = std::thread{[this]
@@ -41,7 +41,7 @@ CmeTurn::CmeTurn(std::string uri, cme::CoherencyMode coherency, const std::vecto
                           }};
     try
     {
-        openSession(coherency, domains);
+        openSession(domains);
     }
     catch (...)
     {
@@ -208,13 +208,11 @@ void CmeTurn::stopWaiter() noexcept
     }
 }
 
-void CmeTurn::openSession(cme::CoherencyMode coherency, const std::vector<std::string>& domains)
+void CmeTurn::openSession(const std::vector<std::string>& domains)
 {
     try
     {
-        cme::Session::OpenOpts_t opts{};
-        opts.coherency = coherency;
-        session_ = cme::SharedSession::open(uri_, opts);
+        session_ = cme::SharedSession::open(uri_);
     }
     catch (const cme::Error& refused)
     {

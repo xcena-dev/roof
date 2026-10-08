@@ -24,7 +24,6 @@
 #include <thread>
 #include <vector>
 
-#include "cme/shared.hpp"
 #include "cme/shared_session.hpp"
 #include "turn/service.hpp"
 
@@ -34,9 +33,9 @@ namespace fsdaemon::turn
 class CmeTurn : public TurnService
 {
 public:
-    // Opens the cme region @uri in @coherency mode, takes this node's peer slot, and creates or
-    // joins each of @domains. Throws TurnUnavailable when the region cannot be opened.
-    CmeTurn(std::string uri, cme::CoherencyMode coherency, const std::vector<std::string>& domains);
+    // Opens the cme region @uri under the mode its mapping calls for, takes this node's peer slot, and
+    // creates or joins each of @domains. Throws TurnUnavailable when the region cannot be opened.
+    CmeTurn(std::string uri, const std::vector<std::string>& domains);
     ~CmeTurn() override;
 
     [[nodiscard]] bool tryAcquireHere(const std::string& domain) override;
@@ -62,7 +61,7 @@ private:
     void runWaiter();
     void stopWaiter() noexcept;
     void post(std::function<void()> work);
-    void openSession(cme::CoherencyMode coherency, const std::vector<std::string>& domains);
+    void openSession(const std::vector<std::string>& domains);
     void ensureDomain(const std::string& domain);
 
     std::string uri_;
