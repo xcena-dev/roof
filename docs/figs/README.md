@@ -19,6 +19,37 @@ python3 canvas_render.py access_decision.png          # canvas to a PNG
 The server address differs per clone and is read from `canvas.yaml`, which is not tracked.
 Copy `canvas.example.yaml` to `canvas.yaml` and fill it in.
 
+## Drafting a new figure
+
+`figlib.py` builds a first draft in code, for a figure that is easier to lay out by numbers than by hand.
+A draft script imports it,
+places elements with `box`, `container`, `note`, `line` and `arrow`,
+and ends with `writeScene`.
+
+```python
+from figlib import BLUE, BLUE_BG, arrow, box, writeScene
+
+box("client", 0, 0, 300, 100, BLUE, BLUE_BG, "client\nopens the file")
+box("server", 500, 0, 300, 100, BLUE, BLUE_BG, "server")
+arrow("open", "client", (300, 50), "server", (500, 50), BLUE)
+writeScene("example.excalidraw", "example.py")
+```
+
+A box label's first line is the component's name, and the lines after it are its description in smaller text.
+`layoutSteps` lays out a sequence figure:
+one numbered note above each arrow,
+each note wrapped to its arrow's width.
+`make_example.py` is a whole draft of a small sequence figure, with lanes, lifelines and a boxed step between arrows.
+`python3 make_example.py example.excalidraw` writes it, and `canvas_push.py` puts it on the canvas.
+Every element takes the colours at the top of `figlib.py` and the Comic Shanns font, so a draft matches the figures already here.
+
+The draft then takes the path every scene takes:
+`canvas_push.py` puts it on the canvas,
+the canvas is where it is finished by hand,
+and `canvas_pull.py` writes the finished scene back.
+From then on the scene is the source.
+The draft script is not run again, because its output would discard the hand edits.
+
 ## Two things that bite
 
 **Run `canvas_push.py --check` before a push.**
