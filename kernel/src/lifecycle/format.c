@@ -134,7 +134,7 @@ s32 format_device(struct fs_sb_info *sbi)
 
 	union layout_rat_head_copy rat_head = {};
 	rat_head.local.magic = LAYOUT_RAT_MAGIC;
-	rat_head.local.version = 1;
+	rat_head.local.version = LAYOUT_RAT_VERSION;
 	rat_head.local.device_size = total;
 	rat_head.local.regions_start = regions_start;
 	cxl_set_layout_rat_head(&rat->head, &rat_head);

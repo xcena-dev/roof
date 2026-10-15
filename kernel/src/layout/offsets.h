@@ -45,6 +45,7 @@ enum layout_magic {
 	LAYOUT_RAT_MAGIC = 0x46524154, /* "FRAT" */
 
 	LAYOUT_VERSION = 1,
+	LAYOUT_RAT_VERSION = 1,
 };
 
 /* ── Region granule ───────────────────────────────────────────────────
@@ -124,7 +125,7 @@ static inline void __layout_verify_structs(void)
 	LAYOUT_BUILD_BUG_ON(sizeof(struct bootstrap_slot) != LAYOUT_BOOTSTRAP_SLOT_SIZE);
 	LAYOUT_BUILD_BUG_ON(sizeof(struct layout_shard_header) != LAYOUT_SHARD_HEADER_SIZE);
 	LAYOUT_BUILD_BUG_ON(sizeof(struct layout_index_link) != LAYOUT_INDEX_LINK_SIZE);
-	LAYOUT_BUILD_BUG_ON(sizeof(struct acl_deleg_entry) != ACL_DELEG_ENTRY_SIZE);
+	LAYOUT_BUILD_BUG_ON(sizeof(union acl_deleg_entry) != ACL_DELEG_ENTRY_SIZE);
 	LAYOUT_BUILD_BUG_ON(sizeof(struct layout_rat_entry) != LAYOUT_RAT_ENTRY_SIZE);
 }
 

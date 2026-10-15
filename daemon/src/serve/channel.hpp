@@ -41,6 +41,14 @@ struct Frame_t
     std::vector<std::byte> payload;
 };
 
+// The consumer's labels an access response carries back, which the region's role rows match on.
+// Empty matches no row.
+struct ConsumerLabels_t
+{
+    std::string_view group;
+    std::string_view role;
+};
+
 class FsChannel
 {
 public:
@@ -85,8 +93,8 @@ public:
 
     bool sendAttestResponse(std::uint64_t seq, std::int32_t status,
                             std::string_view group, std::string_view role);
-    bool sendAccessResponse(std::uint64_t seq, std::int32_t status,
-                            std::uint32_t grantedPerms, std::int64_t expirySecs);
+    bool sendAccessResponse(std::uint64_t seq, std::int32_t status, std::uint32_t grantedPerms,
+                            std::int64_t expirySecs, const ConsumerLabels_t& labels = {});
     bool sendLockResponse(std::uint64_t seq, std::uint32_t type, std::int32_t status);
 
 private:

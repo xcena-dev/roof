@@ -7,6 +7,7 @@
 #ifndef _LAYOUT_RAT_H
 #define _LAYOUT_RAT_H
 
+#include <linux/limits.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -27,7 +28,7 @@ enum layout_rat_entry_state {
 	LAYOUT_RAT_ENTRY_ALLOCATED = 2,
 	LAYOUT_RAT_ENTRY_DELETING = 3,
 	/* The owning node is gone and a reader is still here. Nobody owns it, no new grant lands on
-	 * it, and the rows and open references already on it are what keep it until they go. Not
+	 * it, and the process rows and open references already on it keep it until they go. Not
 	 * transient: it can stand for as long as somebody reads it. */
 	LAYOUT_RAT_ENTRY_OWNER_DEAD = 4,
 };
@@ -49,6 +50,14 @@ static inline bool layout_rat_state_is_standing(u32 state)
 enum acl_deleg_state {
 	ACL_DELEG_EMPTY = 0,
 	ACL_DELEG_ACTIVE = 1,
+};
+
+/* What a row names, which decides how the bytes past its shared head read. 0 is no kind, and is what
+ * a row a create cleared carries. */
+enum acl_deleg_kind {
+	ACL_DELEG_KIND_PROCESS = 1,
+	ACL_DELEG_KIND_ACCOUNT = 2,
+	ACL_DELEG_KIND_ROLE = 3,
 };
 
 enum {
@@ -77,28 +86,60 @@ _Static_assert(LAYOUT_RAT_MAP_WORDS * 8 + 8 <= CXL_LINE_BYTES,
 /* An id field that does not narrow the row. Not zero, which is root and gid 0. */
 #define ACL_DELEG_ANY_ID ((__u32)~0U)
 
-/*
- * Delegation Entry - one line of a RAT entry's delegation table, in two shapes told apart by pid.
- * A process row (pid != 0) binds to that process's start time, exe binary and execve generation,
- * so a reused pid or an execve stops matching, and carries the account it runs as. An account row
- * (pid == 0) names a node-local uid or gid, either of which may be ACL_DELEG_ANY_ID, for a grant
- * that outlives the process, and leaves birth_time and the exe fields unused.
- */
-#define ACL_DELEG_FIELDS(FIELD, ARRAY, BYTES)                                 \
-	FIELD(32, state) /* enum acl_deleg_state */                           \
-	FIELD(32, node_id) /* Target node, exact: 0 matches nothing */        \
-	FIELD(32, pid) /* Target PID, or 0 for an account row */              \
-	FIELD(32, perms) /* Permission bitmask (FS_PERM_*) */                 \
-	FIELD(64, birth_time) /* PID reuse protection (process rows only) */  \
-	FIELD(64, granted_at) /* Grant timestamp (ns since epoch) */          \
-	FIELD(64, exec_id) /* execve generation (process rows only) */        \
-	FIELD(64, exe_inode_ino) /* exe binary inode # (process rows only) */ \
-	FIELD(32, exe_inode_dev) /* exe binary fs dev (huge_encode_dev) */    \
-	FIELD(32, uid) /* target uid, or the process row's own */             \
-	FIELD(32, gid) /* target gid, or the process row's own */             \
-	BYTES(4, reserved)
+/* The bytes every kind of row shares, at the same offsets and widths in each kind's view, so a scan
+ * reads state, kind, node and perms off any row before it knows which kind it holds. */
+#define ACL_DELEG_HEAD_FIELDS(FIELD, ARRAY, BYTES)                                     \
+	FIELD(16, state) /* enum acl_deleg_state */                                    \
+	FIELD(16, kind) /* enum acl_deleg_kind */                                      \
+	FIELD(16, node_id) /* the node that wrote the row, exact: 0 matches nothing */ \
+	FIELD(16, perms) /* Permission bitmask (FS_PERM_*) */
 
-CXL_DEFINE_LINE_VIEWS(acl_deleg_entry, ACL_DELEG_FIELDS)
+/* A process row binds to that process's exe binary, start time and execve generation, so a reused
+ * pid or an execve stops matching, and carries the account it runs as. */
+#define ACL_DELEG_PROCESS_FIELDS(FIELD, ARRAY, BYTES)                      \
+	ACL_DELEG_HEAD_FIELDS(FIELD, ARRAY, BYTES)                         \
+	FIELD(32, pid) /* the process's tgid */                            \
+	FIELD(32, uid) /* the account the process runs as */               \
+	FIELD(32, gid)                                                     \
+	FIELD(32, exe_inode_dev) /* exe binary fs dev (huge_encode_dev) */ \
+	FIELD(64, exe_inode_ino) /* exe binary inode # */                  \
+	FIELD(64, exec_id) /* execve generation */                         \
+	FIELD(64, birth_time) /* PID reuse protection */                   \
+	BYTES(16, reserved)
+
+CXL_DEFINE_LINE_VIEWS(acl_deleg_process, ACL_DELEG_PROCESS_FIELDS)
+
+/* An account row names a node-local uid or gid, either of which may be ACL_DELEG_ANY_ID. */
+#define ACL_DELEG_ACCOUNT_FIELDS(FIELD, ARRAY, BYTES) \
+	ACL_DELEG_HEAD_FIELDS(FIELD, ARRAY, BYTES)    \
+	FIELD(32, uid)                                \
+	FIELD(32, gid)                                \
+	BYTES(48, reserved)
+
+CXL_DEFINE_LINE_VIEWS(acl_deleg_account, ACL_DELEG_ACCOUNT_FIELDS)
+
+/* A workload by its attested group and role, on target_node or on every node with 0. node_id is the
+ * writer's, so the writer's unmount or death takes the row as it takes an account row. */
+#define ACL_DELEG_ROLE_FIELDS(FIELD, ARRAY, BYTES)                                   \
+	ACL_DELEG_HEAD_FIELDS(FIELD, ARRAY, BYTES)                                   \
+	BYTES(FS_DAEMON_IDENT_LEN, group) /* NUL-padded, as the helper attests it */ \
+	BYTES(FS_DAEMON_IDENT_LEN, role)                                             \
+	FIELD(16, target_node) /* the node it answers on, 0 for every node */        \
+	BYTES(22, reserved)
+
+CXL_DEFINE_LINE_VIEWS(acl_deleg_role, ACL_DELEG_ROLE_FIELDS)
+
+_Static_assert((u32)FS_LABEL_LEN == (u32)FS_DAEMON_IDENT_LEN,
+	       "a role grant's labels must be the ones the helper attests");
+_Static_assert(FS_PERM_ALL <= U16_MAX && FS_MAX_NODE_ID <= U16_MAX, "a row holds perms and node ids in 16 bits");
+
+/* One slot of a RAT entry's delegation table, written and read through the view its kind names. The
+ * head sits at the same offsets in every view, so a reader wanting only the head may use any. */
+union acl_deleg_entry {
+	struct acl_deleg_process process;
+	struct acl_deleg_account account;
+	struct acl_deleg_role role;
+};
 
 /* CL0 of a RAT entry: what an open, a read and a stat all reach for. */
 #define LAYOUT_RAT_HOT_FIELDS(FIELD, ARRAY, BYTES)                                  \
@@ -146,7 +187,7 @@ struct layout_rat_entry {
 
 	struct layout_rat_acl acl;
 
-	struct acl_deleg_entry deleg_entries[ACL_DELEG_MAX_ENTRIES];
+	union acl_deleg_entry deleg_entries[ACL_DELEG_MAX_ENTRIES];
 } __attribute__((packed));
 
 /* Which line of an entry to fence, and what the asserts below hold the struct to. */
@@ -179,7 +220,7 @@ _Static_assert(offsetof(struct layout_rat_entry, deleg_entries) % CXL_LINE_BYTES
  */
 #define LAYOUT_RAT_HEAD_FIELDS(FIELD, ARRAY, BYTES)             \
 	FIELD(32, magic) /* LAYOUT_RAT_MAGIC */                 \
-	FIELD(32, version) /* 1 */                              \
+	FIELD(32, version) /* LAYOUT_RAT_VERSION */             \
 	FIELD(64, device_size)                                  \
 	FIELD(64, regions_start) /* where region files start */ \
 	BYTES(40, reserved0)

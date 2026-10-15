@@ -94,7 +94,7 @@ static inline struct layout_rat_entry *layout_get_rat_entry(struct fs_sb_info *s
 }
 
 /* Delegation row accessor: the address alone, for the same reason as the entry above. */
-static inline struct acl_deleg_entry *layout_get_deleg_entry(struct layout_rat_entry *entry, u32 idx)
+static inline union acl_deleg_entry *layout_get_deleg_entry(struct layout_rat_entry *entry, u32 idx)
 {
 	if (unlikely(idx >= ACL_DELEG_MAX_ENTRIES))
 		return NULL;

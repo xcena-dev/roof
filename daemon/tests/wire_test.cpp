@@ -109,8 +109,13 @@ void checkAccessResponsePack(fsdaemon::probe::Context& ctx)
     response.status = 0;
     response.granted_perms = FS_PERM_READ | FS_PERM_WRITE;
     response.expiry_secs = 3600;
+    writeName(response.group, "prod");
+    writeName(response.role, "llm-worker");
     const auto raw = encode(response);
-    ctx.checkf(raw.size() == 24, "access response is %zu bytes (want 24)", raw.size());
+    ctx.checkf(raw.size() == 56, "access response is %zu bytes (want 56)", raw.size());
+    // The consumer's group starts at offset 16 and the role at 32; those offsets are the ABI.
+    ctx.check(std::memcmp(raw.data() + 16, "prod\0", 5) == 0, "the consumer's group sits at offset 16");
+    ctx.check(std::memcmp(raw.data() + 32, "llm-worker\0", 11) == 0, "the consumer's role sits at offset 32");
 }
 
 void checkAttestRequestUnpack(fsdaemon::probe::Context& ctx)

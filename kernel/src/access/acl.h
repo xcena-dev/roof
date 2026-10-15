@@ -8,6 +8,8 @@
 
 #include <linux/types.h>
 
+#include "daemon_uapi.h" /* FS_DAEMON_IDENT_LEN */
+
 struct fs_sb_info;
 struct layout_rat_entry;
 struct pid;
@@ -36,6 +38,18 @@ bool acl_get_exe_id(u64 *out_ino, u32 *out_dev);
 /* Read here rather than by the helper, which would need ptrace for /proc/<pid>/exe. */
 void acl_get_exe_path(char *out, u32 len);
 
+/* =================================== Who a role row names ==================================== */
+/* Two NUL-padded labels and the node the row answers on, 0 for every node. */
+struct acl_role_key {
+	char group[FS_DAEMON_IDENT_LEN];
+	char role[FS_DAEMON_IDENT_LEN];
+	u32 target_node;
+};
+
+/* @src as a row holds a label: 1 to FS_DAEMON_IDENT_LEN - 1 bytes, NUL-padded. False for an empty or
+ * unterminated one, which names no workload. */
+bool acl_copy_label(char *dst, const char *src);
+
 /* ================================ Whether an access is allowed ================================ */
 /* Every bit in @required_perms, or -EACCES. */
 s32 acl_check_permission(struct fs_sb_info *sbi, u32 rat_entry_id, u32 required_perms);
@@ -44,12 +58,17 @@ s32 acl_check_permission(struct fs_sb_info *sbi, u32 rat_entry_id, u32 required_
 /* What everyone holding no row of their own gets. 0 is a value and not an omission. */
 s32 acl_set_default_perms(struct fs_sb_info *sbi, u32 rat_entry_id, u32 perms);
 
-/* The helper upcall decides the bits, and the caller's identity is read here rather than passed. */
-s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 perms);
+/* The helper's bits and the role rows standing for @labels decide, or -EACCES when together they miss
+ * a bit of @required_perms. The caller's identity is read here rather than passed. */
+s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_perms,
+			   const struct acl_role_key *labels, u32 required_perms);
 
 /* An account row asked for by a caller that has to earn it: EACCES holds neither ADMIN nor GRANT,
  * and EPERM holds GRANT and reaches past it. One node, one account, no process to outlive. */
 s32 acl_grant_deleg_account(struct fs_sb_info *sbi, u32 rat_entry_id, u32 uid, u32 gid, u32 perms);
+
+/* A role row, earned as an account row is. */
+s32 acl_grant_deleg_role(struct fs_sb_info *sbi, u32 rat_entry_id, const struct acl_role_key *key, u32 perms);
 
 /* This node's row on the lock region, at the slot its node_id names. Reached on a capability,
  * before any turn exists, so the slot is computed rather than scanned for. */
@@ -58,6 +77,9 @@ s32 acl_set_lock_region_account(struct fs_sb_info *sbi, struct layout_rat_entry 
 
 /* A row naming the caller asks nothing. Any other row needs FS_PERM_ADMIN. */
 s32 acl_revoke_deleg_account(struct fs_sb_info *sbi, u32 rat_entry_id, u32 uid, u32 gid);
+
+/* The role row this node wrote for @key. A process row it earned stays. Needs FS_PERM_ADMIN. */
+s32 acl_revoke_deleg_role(struct fs_sb_info *sbi, u32 rat_entry_id, const struct acl_role_key *key);
 
 /* ========================== What a recorded identity is still worth =========================== */
 /* The task a stored tgid names, looked up in the namespace that numbered it rather than in the

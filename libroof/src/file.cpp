@@ -36,8 +36,36 @@ static_assert(Permission::Grant.bits == FS_PERM_GRANT);
 static_assert(Permission::All.bits == FS_PERM_ALL);
 static_assert(AnyId == FS_PERM_ANY_ID);
 static_assert(MaxDelegations == FS_DELEG_MAX);
+static_assert(MaxLabelBytes == FS_LABEL_LEN - 1);
 static_assert(static_cast<std::uint32_t>(CachePolicy::Writeback) == FS_CACHE_WRITEBACK);
 static_assert(static_cast<std::uint32_t>(CachePolicy::Uncached) == FS_CACHE_UNCACHED);
+
+namespace
+{
+
+// @command is the _IOC value, which is 32 bits wide; ioctl(2) widens it at the call.
+void sendPermRecord(std::int32_t descriptor, std::uint32_t command, FsPermReq& sent, std::string_view named)
+{
+    if (::ioctl(descriptor, command, &sent) != 0)
+    {
+        throw FsCodedError{std::string{named}, lastSystemError()};
+    }
+}
+
+// The labels go NUL-padded into the kernel's fixed arrays. One too long to fit goes with no terminator,
+// which the kernel refuses rather than reading a cut label as another role.
+FsPermReq makeRoleRecord(std::string_view group, std::string_view role, Permission perms, std::uint32_t node)
+{
+    FsPermReq sent{};
+    sent.kind = FS_PERM_KIND_ROLE;
+    sent.perms = perms.bits;
+    sent.node_id = node;
+    static_cast<void>(group.copy(sent.group, sizeof(sent.group)));
+    static_cast<void>(role.copy(sent.role, sizeof(sent.role)));
+    return sent;
+}
+
+}  // namespace
 
 // ── Mapping ─────────────────────────────────────────────────────────────
 
@@ -211,8 +239,21 @@ void File::revokePermission(std::uint32_t uid, std::uint32_t gid)
     sendPermRequest(FS_IOC_PERM_REVOKE, uid, gid, Permission::None, "perm_revoke");
 }
 
+void File::grantRole(std::string_view group, std::string_view role, Permission perms, std::uint32_t node)
+{
+    requireOpen("perm_grant_role");
+    auto sent = makeRoleRecord(group, role, perms, node);
+    sendPermRecord(held_, FS_IOC_PERM_GRANT, sent, "perm_grant_role");
+}
+
+void File::revokeRole(std::string_view group, std::string_view role, std::uint32_t node)
+{
+    requireOpen("perm_revoke_role");
+    auto sent = makeRoleRecord(group, role, Permission::None, node);
+    sendPermRecord(held_, FS_IOC_PERM_REVOKE, sent, "perm_revoke_role");
+}
+
 // The kernel does its own ADMIN check next to the write, so nothing here judges the request.
-// @command is the _IOC value, which is 32 bits wide; ioctl(2) widens it at the call.
 void File::sendPermRequest(std::uint32_t command, std::uint32_t uid, std::uint32_t gid,
                            Permission perms, std::string_view named)
 {
@@ -224,10 +265,7 @@ void File::sendPermRequest(std::uint32_t command, std::uint32_t uid, std::uint32
     sent.gid = gid;
     sent.perms = perms.bits;
 
-    if (::ioctl(held_, command, &sent) != 0)
-    {
-        throw FsCodedError{std::string{named}, lastSystemError()};
-    }
+    sendPermRecord(held_, command, sent, named);
 }
 
 // ── free verbs ──────────────────────────────────────────────────────────

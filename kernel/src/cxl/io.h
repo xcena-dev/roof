@@ -185,6 +185,14 @@ void cxl_zero_cachelines(void *base, u64 bytes);
 		FIELDS(CXL_VIEW_DECODE_FIELD, CXL_VIEW_DECODE_ARRAY, CXL_VIEW_DECODE_BYTES) \
 	}                                                                                   \
                                                                                             \
+	/* A line already read, for a caller that learns from it which view to decode. */   \
+	static inline void cxl_decode_##name(union name##_copy *copy,                       \
+					     const struct cxl_cacheline *line)              \
+	{                                                                                   \
+		copy->line = *line;                                                         \
+		FIELDS(CXL_VIEW_DECODE_FIELD, CXL_VIEW_DECODE_ARRAY, CXL_VIEW_DECODE_BYTES) \
+	}                                                                                   \
+                                                                                            \
 	static inline void cxl_set_##name(struct name *row, union name##_copy *copy)        \
 	{                                                                                   \
 		FIELDS(CXL_VIEW_ENCODE_FIELD, CXL_VIEW_ENCODE_ARRAY, CXL_VIEW_ENCODE_BYTES) \

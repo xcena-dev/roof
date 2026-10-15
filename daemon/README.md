@@ -62,7 +62,7 @@ so a process cannot claim to be someone else.
 |---|---|---|---|
 | `HELLO` | | `capabilities`: `ATTEST_OWNER`, `ACCESS_REQUEST`, `OPA_RESPONSE`, `REVOKE`, `LOCK` | queues a request only to a daemon that declared its kind;<br>no `LOCK` means every metadata write is refused |
 | `ATTEST_REQUEST` | the creating task | `status`, `group`, `role` | stamps `group` and `role` into the region as `owner_group` and `owner_role`;<br>non-zero `status` refuses the create |
-| `ACCESS_REQUEST` | the calling task, plus the region's `owner_group` and `owner_role` | `status`, `granted_perms`, `expiry_secs` | masks to `READ`, `WRITE`, `GRANT`, `ADMIN`, admits if every needed bit is there, and writes a delegation row so the next access asks nobody;<br>`expiry_secs` is not yet read |
+| `ACCESS_REQUEST` | the calling task, plus the region's `owner_group` and `owner_role` | `status`, `granted_perms`, `expiry_secs`, and the caller's `group` and `role` | masks to `READ`, `WRITE`, `GRANT`, `ADMIN`, adds what the region's role rows grant that `group` and `role`, admits if every needed bit is there, and writes a delegation row so the next access asks nobody;<br>a policy denial is `status` 0 with no bits, so the role rows still decide;<br>non-zero `status` is a caller the daemon could not attest;<br>`expiry_secs` is not yet read |
 | `LOCK_REQUEST` / `UNLOCK_REQUEST` | `domain`, and on lock `timeout_ms` | `status` | 0 is the turn, taken after the mount's own mutex;<br>anything else refuses the write with `-EAGAIN`, a silent daemon with `-ETIMEDOUT` |
 
 

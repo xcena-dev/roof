@@ -184,12 +184,12 @@ static s32 gc_sweep_dead_delegations(struct fs_sb_info *sbi, struct layout_rat_e
 	s32 cleaned = 0;
 
 	for (u32 i = 0; i < ACL_DELEG_MAX_ENTRIES; i++) {
-		struct acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, i);
+		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, i);
 		if (!deleg_entry)
 			continue;
 
-		union acl_deleg_entry_copy copy;
-		cxl_get_acl_deleg_entry(&copy, deleg_entry);
+		union acl_deleg_process_copy copy;
+		cxl_get_acl_deleg_process(&copy, &deleg_entry->process);
 
 		switch (copy.local.state) {
 		case ACL_DELEG_EMPTY:
@@ -199,7 +199,7 @@ static s32 gc_sweep_dead_delegations(struct fs_sb_info *sbi, struct layout_rat_e
 			u32 de_pid = copy.local.pid;
 			u64 de_birth = copy.local.birth_time;
 
-			if (copy.local.node_id != sbi->node_id || de_pid == 0)
+			if (copy.local.node_id != sbi->node_id || copy.local.kind != ACL_DELEG_KIND_PROCESS)
 				break;
 
 			/* A row with no start time names no live process, because the write that
@@ -213,12 +213,13 @@ static s32 gc_sweep_dead_delegations(struct fs_sb_info *sbi, struct layout_rat_e
 			if (!meta_trylock(sbi, &lock, GC_LOCK_WAIT_MS, TEST_META_OP_SWEEP))
 				break;
 
-			cxl_get_acl_deleg_entry(&copy, deleg_entry);
+			cxl_get_acl_deleg_process(&copy, &deleg_entry->process);
 			if (copy.local.state == ACL_DELEG_ACTIVE &&
+			    copy.local.kind == ACL_DELEG_KIND_PROCESS &&
 			    copy.local.pid == de_pid &&
 			    copy.local.birth_time == de_birth) {
 				copy.local.state = ACL_DELEG_EMPTY;
-				cxl_set_acl_deleg_entry(deleg_entry, &copy);
+				cxl_set_acl_deleg_process(&deleg_entry->process, &copy);
 				cleaned++;
 			}
 
@@ -231,16 +232,18 @@ static s32 gc_sweep_dead_delegations(struct fs_sb_info *sbi, struct layout_rat_e
 	return cleaned;
 }
 
-static bool gc_has_active_delegations(struct layout_rat_entry *rat_entry)
+/* A process row is a consumer's stake on the region. An account row is a grant, and like
+ * default_perms it buys access and not lifetime. */
+static bool gc_has_process_rows(struct layout_rat_entry *rat_entry)
 {
 	for (u32 i = 0; i < ACL_DELEG_MAX_ENTRIES; i++) {
-		struct acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, i);
+		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, i);
 		if (!deleg_entry)
 			continue;
 
-		union acl_deleg_entry_copy copy;
-		cxl_get_acl_deleg_entry(&copy, deleg_entry);
-		if (copy.local.state == ACL_DELEG_ACTIVE)
+		union acl_deleg_process_copy copy;
+		cxl_get_acl_deleg_process(&copy, &deleg_entry->process);
+		if (copy.local.state == ACL_DELEG_ACTIVE && copy.local.kind == ACL_DELEG_KIND_PROCESS)
 			return true;
 	}
 
@@ -254,9 +257,9 @@ static bool gc_has_no_name(const struct layout_rat_entry *entry)
 }
 
 /*
- * Nobody stands behind the entry: its owner is dead or its name was unlinked, and no delegation
- * row is left. A row is what a consumer stakes to keep a region past its owner, so reaching one
- * through default_perms alone buys access and not lifetime.
+ * Nobody stands behind the entry: its owner is dead or its name was unlinked, and no process row is
+ * left. A process row is what a consumer stakes to keep a region past its owner, so reaching one
+ * through default_perms or an account row alone buys access and not lifetime.
  */
 static bool gc_is_unclaimed(struct layout_rat_entry *entry)
 {
@@ -268,7 +271,7 @@ static bool gc_is_unclaimed(struct layout_rat_entry *entry)
 
 	/* The state answers the owner question already, so the rows are the whole test. */
 	if (hot.local.state == LAYOUT_RAT_ENTRY_OWNER_DEAD)
-		return !gc_has_active_delegations(entry);
+		return !gc_has_process_rows(entry);
 
 	/* Unlinked while somebody still held it: the name is gone and the holders are what keep it. */
 	if (hot.local.state == LAYOUT_RAT_ENTRY_ALLOCATED && gc_has_no_name(entry))
@@ -282,12 +285,12 @@ static bool gc_is_unclaimed(struct layout_rat_entry *entry)
 	/* A claimed orphan: the admin named itself on an entry whose create died before the owner
 	 * was written, so there is no pid to ask and the claim itself is the verdict. */
 	if (acl.local.owner_pid == 0 && layout_rat_state_is_transient(hot.local.state))
-		return !gc_has_active_delegations(entry);
+		return !gc_has_process_rows(entry);
 
 	if (!acl_is_owner_dead(acl.local.owner_pid, acl.local.owner_birth_time))
 		return false;
 
-	if (gc_has_active_delegations(entry))
+	if (gc_has_process_rows(entry))
 		return false;
 
 	return true;
@@ -387,18 +390,19 @@ static u32 gc_drop_node_delegations(struct layout_rat_entry *entry, u32 node_id)
 	u32 dropped = 0;
 
 	for (u32 slot = 0; slot < ACL_DELEG_MAX_ENTRIES; slot++) {
-		struct acl_deleg_entry *deleg_entry = layout_get_deleg_entry(entry, slot);
+		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(entry, slot);
 		if (!deleg_entry)
 			continue;
 
-		union acl_deleg_entry_copy copy;
-		cxl_get_acl_deleg_entry(&copy, deleg_entry);
+		/* Every kind: only the head is read, and written back with the rest of the line as it was. */
+		union acl_deleg_process_copy copy;
+		cxl_get_acl_deleg_process(&copy, &deleg_entry->process);
 		if (copy.local.state != ACL_DELEG_ACTIVE || copy.local.node_id != node_id)
 			continue;
 
 		/* The bound stays: lowering it would hide a row a peer just wrote above. */
 		copy.local.state = ACL_DELEG_EMPTY;
-		cxl_set_acl_deleg_entry(deleg_entry, &copy);
+		cxl_set_acl_deleg_process(&deleg_entry->process, &copy);
 		dropped++;
 	}
 
@@ -417,12 +421,12 @@ static bool gc_has_node_owner(struct layout_rat_entry *entry, u32 node_id)
 static bool gc_has_node_deleg(struct layout_rat_entry *entry, u32 node_id)
 {
 	for (u32 slot = 0; slot < ACL_DELEG_MAX_ENTRIES; slot++) {
-		struct acl_deleg_entry *deleg_entry = layout_get_deleg_entry(entry, slot);
+		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(entry, slot);
 		if (!deleg_entry)
 			continue;
 
-		union acl_deleg_entry_copy copy;
-		cxl_get_acl_deleg_entry(&copy, deleg_entry);
+		union acl_deleg_process_copy copy;
+		cxl_get_acl_deleg_process(&copy, &deleg_entry->process);
 		if (copy.local.state == ACL_DELEG_ACTIVE && copy.local.node_id == node_id)
 			return true;
 	}
@@ -466,9 +470,9 @@ static void gc_mark_owner_dead(struct layout_rat_entry *entry, u32 index, u32 no
  * No pid is consulted. The slot said that node is gone, which is a stronger statement than a local
  * process table can make about a remote pid, and it is the statement the eviction rests on.
  *
- * An entry the dead node owned goes only when no row is left on it, because a row is what a
- * consumer stakes to keep a region past its owner. An entry that still carries one is marked
- * OWNER_DEAD: nothing new starts on it, and the ordinary sweep takes it when the last row goes.
+ * An entry the dead node owned goes only when no process row is left on it, because a process row
+ * is what a consumer stakes to keep a region past its owner. An entry that still carries one is
+ * marked OWNER_DEAD: nothing new starts on it, and the ordinary sweep takes it when the last goes.
  * Rows a live node wrote are left alone, since a grant nobody revoked is not this sweep's to
  * withdraw.
  */
@@ -518,7 +522,7 @@ static bool gc_recover_dead_node(struct fs_sb_info *sbi, u32 node_id)
 		gc_drop_node_delegations(entry, node_id);
 
 		if (owned) {
-			if (gc_has_active_delegations(entry) || region_has_refs(sbi, i))
+			if (gc_has_process_rows(entry) || region_has_refs(sbi, i))
 				gc_mark_owner_dead(entry, i, node_id);
 			else if (!gc_cleanup_rat_entry(sbi, entry, true))
 				clear = false;

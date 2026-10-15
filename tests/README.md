@@ -45,6 +45,7 @@ Every case is a binary over `libroof`, takes its mount points on the command lin
 | `test_fork_inherit` | onenode | A descriptor survives `fork` and its permission does not. |
 | `test_pid_reuse` | multinode | A reused pid inherits nothing from the row that named it. Skips without `cap_sys_admin`. |
 | `test_postexec_attack` | multinode, pathrule | `execve` keeps pid and start time, and the executable is what separates the granted process from the new image. `postexec_other` is that image. |
+| `test_perm_role` | multinode, pathrule | A grant by group and role reaches the workload the helper attests under that role and no other of the same account. A target node, a revoke and the label limits hold. `role_consumer` is the workload. |
 | `test_exec_generation` | multinode | A process that re-execs its own binary keeps its delegation slot but not the row from before the exec. |
 | `test_cloexec_required` | onenode | Every data path refuses a descriptor without `FD_CLOEXEC`, and admits the same one once `fcntl` sets the bit. |
 | `test_channel_device` | onenode | The daemon's upcall channel under `/dev` is not openable by an unprivileged process. |
@@ -68,6 +69,7 @@ Every case is a binary over `libroof`, takes its mount points on the command lin
 | `test_unlink_live_refs` | multinode | Unlink takes the name at once, and the extent only after the last descriptor or mapping on any node has gone. |
 | `test_unlink_holders` | multinode | With no holder the extent goes with the name. With holders on both nodes it goes when the last one leaves, and meanwhile no open, no placement and no other bytes reach it. |
 | `test_gc_owner_readers` | multinode | A dead owner's region stays while a peer reads it, row or no row, and goes once the reader leaves. A live process may unlink the name meanwhile. |
+| `test_gc_grant_rows` | multinode | An account row and a role row do not keep a dead owner's region, and a sweep returns the slot. |
 | `test_gc_zero_extent` | onenode | A region the sweep takes back from a dead owner is zeroed first, so the next file placed over its extent reads zero. |
 | `test_unlink_race` | multinode | Two nodes creating, mapping and unlinking at once never read bytes that are not their own file's, and leave nothing standing. |
 

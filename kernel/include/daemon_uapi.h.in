@@ -115,15 +115,18 @@ struct @FS_PREFIX@_daemon_access_request {
 _Static_assert(sizeof(struct @FS_PREFIX@_daemon_access_request) == 256,
 	       "@FS_PREFIX@_daemon_access_request ABI: expected 256 bytes");
 
-/* granted_perms uses the permission bits uapi.h names. */
+/* The answer to an access request. A policy denial is status 0 with no bits, so the consumer's
+ * labels still reach the kernel and the region's role rows still get their say. */
 struct @FS_PREFIX@_daemon_response {
-	__s32 status; /* 0 = OK, neg errno */
-	__u32 granted_perms; /* valid iff status == 0 */
+	__s32 status; /* 0 = the consumer was attested, neg errno otherwise */
+	__u32 granted_perms; /* what the policy grants, in the bits uapi.h names */
 	__s64 expiry_secs; /* unix epoch, 0 = no expiry */
+	char group[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN]; /* the consumer's, empty when it has none */
+	char role[@FS_PREFIX_UPPER@_DAEMON_IDENT_LEN];
 	__u32 reserved[2];
 } __attribute__((packed));
-_Static_assert(sizeof(struct @FS_PREFIX@_daemon_response) == 24,
-	       "@FS_PREFIX@_daemon_response ABI: expected 24 bytes");
+_Static_assert(sizeof(struct @FS_PREFIX@_daemon_response) == 56,
+	       "@FS_PREFIX@_daemon_response ABI: expected 56 bytes");
 
 /* The task claiming a region, in the shape the access request carries a consumer, so one rule
  * matches whichever call reaches the helper. Region and node stay kernel-side. */

@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-# The identity rules test_postexec_attack needs. check.sh renders them in place of the config's own
-# rules block and plants the result for that case alone.
+# The identity rules the pathrule cases need. check.sh renders them in place of the config's own
+# rules block and plants the result for those cases alone.
 #
-# An account and one binary: the case's own. The binary it execs into then attests to nothing and
-# the region refuses it, which is the claim the case exists to make. Every other binary on the host
-# is refused too, which is why this is planted for one case and taken back after.
+# test_postexec_attack: an account and one binary, the case's own. The binary it execs into then
+# attests to nothing and the region refuses it, which is the claim that case exists to make.
+#
+# test_perm_role: the same account under two roles, told apart by binary. The case is travel/planner
+# and the consumer it launches is travel/hotel.
+#
+# Every other binary on the host is refused too, which is why this is planted for these cases and
+# taken back after.
 
 rules:
   - match:
@@ -13,3 +18,15 @@ rules:
     identity:
       group: prod
       role: llm-worker
+  - match:
+      uid: @APP_UID@
+      path: @ROLE_OWNER_PATH@
+    identity:
+      group: travel
+      role: planner
+  - match:
+      uid: @APP_UID@
+      path: @ROLE_CONSUMER_PATH@
+    identity:
+      group: travel
+      role: hotel

@@ -481,8 +481,8 @@ static s32 super_load_rat(struct fs_sb_info *sbi)
 		return -EINVAL;
 	}
 
-	if (head.local.version != 1) {
-		pr_err("unsupported RAT version %u (expected 1)\n", head.local.version);
+	if (head.local.version != LAYOUT_RAT_VERSION) {
+		pr_err("unsupported RAT version %u (expected %u)\n", head.local.version, LAYOUT_RAT_VERSION);
 		return -EINVAL;
 	}
 

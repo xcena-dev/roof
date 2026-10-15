@@ -101,20 +101,50 @@ static ssize_t deleg_info_show(struct kobject *kobj, struct kobj_attribute *attr
 		len += sysfs_emit_at(buf, len, "region: %u  name: %s\n", rid, name);
 
 		for (u32 i = 0; i < ACL_DELEG_MAX_ENTRIES; i++) {
-			union acl_deleg_entry_copy copy;
-			cxl_get_acl_deleg_entry(&copy, &entry->deleg_entries[i]);
-			if (copy.local.state == ACL_DELEG_EMPTY)
+			/* One read, decoded again through the view the row's kind names. */
+			struct cxl_cacheline row;
+			cxl_get_cacheline(&row, &entry->deleg_entries[i]);
+			union acl_deleg_process_copy process;
+			cxl_decode_acl_deleg_process(&process, &row);
+			if (process.local.state == ACL_DELEG_EMPTY)
 				continue;
 
-			/* pid 0 is an account row, judged on uid and gid. Anything else is a
-			 * process row, whose uid and gid say which account it belongs to. */
-			const char *kind = (copy.local.pid == 0) ? "account" : "process";
-			len += sysfs_emit_at(buf, len,
-					     "  deleg[%u]: %s state=%u node=%u pid=%u uid=%u gid=%u "
-					     "perms=0x%x birth_time=%llu exec_id=%llu\n",
-					     i, kind, copy.local.state, copy.local.node_id, copy.local.pid,
-					     copy.local.uid, copy.local.gid, copy.local.perms, copy.local.birth_time,
-					     copy.local.exec_id);
+			switch (process.local.kind) {
+			case ACL_DELEG_KIND_PROCESS:
+				len += sysfs_emit_at(buf, len,
+						     "  deleg[%u]: process state=%u node=%u pid=%u uid=%u gid=%u "
+						     "perms=0x%x birth_time=%llu exec_id=%llu\n",
+						     i, process.local.state, process.local.node_id, process.local.pid,
+						     process.local.uid, process.local.gid, process.local.perms,
+						     process.local.birth_time, process.local.exec_id);
+				break;
+
+			case ACL_DELEG_KIND_ACCOUNT: {
+				union acl_deleg_account_copy account;
+				cxl_decode_acl_deleg_account(&account, &row);
+				len += sysfs_emit_at(buf, len, "  deleg[%u]: account state=%u node=%u uid=%u gid=%u perms=0x%x\n",
+						     i, account.local.state, account.local.node_id, account.local.uid,
+						     account.local.gid, account.local.perms);
+				break;
+			}
+
+			case ACL_DELEG_KIND_ROLE: {
+				union acl_deleg_role_copy role;
+				cxl_decode_acl_deleg_role(&role, &row);
+				len += sysfs_emit_at(buf, len,
+						     "  deleg[%u]: role state=%u node=%u target=%u group=%.*s role=%.*s perms=0x%x\n",
+						     i, role.local.state, role.local.node_id, role.local.target_node,
+						     (int)sizeof(role.local.group), role.local.group, (int)sizeof(role.local.role),
+						     role.local.role, role.local.perms);
+				break;
+			}
+
+			default:
+				len += sysfs_emit_at(buf, len, "  deleg[%u]: kind=%u state=%u node=%u perms=0x%x\n", i,
+						     process.local.kind, process.local.state, process.local.node_id,
+						     process.local.perms);
+				break;
+			}
 		}
 	} while (false);
 

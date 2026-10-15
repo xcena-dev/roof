@@ -367,8 +367,9 @@ run_root_cases()
 # The pathrule cases, under identity rules that name one binary.
 #
 # Separated because such a rule refuses every other binary on the host, so it cannot be the one the
-# rest of the suite runs under. What those cases claim is that a process which execs into another
-# binary loses what the first one earned, and only a rule naming a binary can tell the two apart.
+# rest of the suite runs under. One case claims that a process which execs into another binary loses
+# what the first one earned. The other claims that a grant by role reaches one binary of an account
+# and not another. Only a rule naming a binary can tell the two apart.
 #
 # The rules go back to what they were on the way out, whatever the run left behind.
 run_pathrule_cases()
@@ -376,6 +377,8 @@ run_pathrule_cases()
     local rendered="$BUILD_DIR/daemon-rules-under-test.yaml"
     local kept="$BUILD_DIR/daemon-rules-as-found.yaml"
     local case_path="$BUILD_DIR/tests/test_postexec_attack"
+    local role_owner_path="$BUILD_DIR/tests/test_perm_role"
+    local role_consumer_path="$BUILD_DIR/tests/role_consumer"
 
     if ! daemon_active; then
         printf '  %sSKIP%s pathrule cases need %s serving to decide anything\n' \
@@ -401,7 +404,7 @@ run_pathrule_cases()
 
     local rules="$BUILD_DIR/daemon-rules-block.yaml"
     "$ROOT/tools/render-fsname.sh" "$ROOT/tests/postexec-rules.yaml.in" "$rules"
-    sed -i "s|@APP_UID@|$(id -u)|g; s|@CASE_PATH@|${case_path}|g" "$rules"
+    sed -i "s|@APP_UID@|$(id -u)|g; s|@CASE_PATH@|${case_path}|g; s|@ROLE_OWNER_PATH@|${role_owner_path}|g; s|@ROLE_CONSUMER_PATH@|${role_consumer_path}|g" "$rules"
     { strip_rules "$kept"; cat "$rules"; } > "$rendered"
 
     local account

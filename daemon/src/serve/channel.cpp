@@ -180,12 +180,14 @@ bool FsChannel::sendAttestResponse(std::uint64_t seq, std::int32_t status, std::
 }
 
 bool FsChannel::sendAccessResponse(std::uint64_t seq, std::int32_t status, std::uint32_t grantedPerms,
-                                   std::int64_t expirySecs)
+                                   std::int64_t expirySecs, const ConsumerLabels_t& labels)
 {
     FsDaemonResponse response{};
     response.status = status;
     response.granted_perms = grantedPerms;
     response.expiry_secs = expirySecs;
+    wire::writeName(response.group, labels.group);
+    wire::writeName(response.role, labels.role);
     response.reserved[0] = 0;
     response.reserved[1] = 0;
     const auto bytes = wire::encode(response);

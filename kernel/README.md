@@ -79,22 +79,27 @@ A check runs at the data access, `mmap`, `read` and `ioctl`, and not at `open()`
 **What the rows say:** 
 owner, then the default, then the delegation rows.
 The owner is the process that created the region, on the node it created it from.
-A row written by `PERM_GRANT` names an account 
-and is read only on the node that wrote it.
+A row written by `PERM_GRANT` names an account or a role.
+An account row is read only on the node that wrote it.
+A role row names a workload by the group and role its identity carries, 
+on every node or on the one the row names.
+Only a row naming a process keeps a region past its owner.
 
 **When the rows say nothing:** 
 a `read` or `mmap` the rows refuse asks the mount's daemon.
-An allow comes back as a row naming the calling process, 
+The daemon answers with what its policy grants and with the caller's group and role.
+The kernel adds what the region's role rows grant those labels.
+If the sum covers the access, the kernel writes a row naming the calling process, 
 and the access goes through on that row.
-A deny is `-EACCES`.
+Otherwise it is `-EACCES`.
 
 ## ioctl Reference
 
 | Command | Direction | Struct | Required |
 |---------|-----------|--------|----------|
-| `FS_IOC_PERM_GRANT` | W | `fs_perm_req` | `ADMIN` or `GRANT`. Only `ADMIN` hands on `ADMIN` or `GRANT`. |
+| `FS_IOC_PERM_GRANT` | W | `fs_perm_req` | `ADMIN` or `GRANT`. Only `ADMIN` hands on `ADMIN` or `GRANT`. `kind` picks an account row or a role row. |
 | `FS_IOC_PERM_SET_DEFAULT` | W | `fs_perm_req` | `ADMIN` |
-| `FS_IOC_PERM_REVOKE` | W | `fs_perm_req` | Nothing for a row naming the caller. `ADMIN` for any other. |
+| `FS_IOC_PERM_REVOKE` | W | `fs_perm_req` | An account row: nothing for a row naming the caller, `ADMIN` for any other. A role row: `ADMIN`. |
 | `FS_IOC_CACHE_SET` | W | `fs_cache_req` | `IOCTL`. Refused with `-EBUSY` once the region is placed. |
 | `FS_IOC_CACHE_GET` | R | `fs_cache_req` | Nothing. It names only the pool the file sits in. |
 

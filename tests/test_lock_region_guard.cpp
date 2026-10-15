@@ -146,15 +146,13 @@ void checkGrantRevoke(fsuser::tests::Report& report, fsuser::tests::Mount& mount
     std::string line;
     while (std::getline(source, line))
     {
-        // pid 0 is what makes a row an account row rather than one bound to a process.
         if (line.find("deleg[") == std::string::npos || line.find(" account ") == std::string::npos)
         {
             continue;
         }
         const auto rowNode = fsuser::tests::readTagged(line, "node=");
-        const auto rowPid = fsuser::tests::readTagged(line, "pid=");
         const auto rowPerms = fsuser::tests::readTagged(line, "perms=", 0);
-        if (!rowNode || !rowPid || !rowPerms || *rowNode != nodeId || *rowPid != 0)
+        if (!rowNode || !rowPerms || *rowNode != nodeId)
         {
             continue;
         }

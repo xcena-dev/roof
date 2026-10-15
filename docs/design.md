@@ -188,26 +188,33 @@ Whichever came second sees the other, so an `open` racing an `unlink` either hol
 
 | Row | Written by | What it names | Ends when |
 |---|---|---|---|
-| process row | an `ACCESS_REQUEST` the daemon allowed | one process on one node, by its tgid and start time<br>and by its executable inode and exec generation | the writing node's GC finds that process dead,<br>its node unmounts or is recovered as dead,<br>or the region is freed |
-| account row | `FS_IOC_PERM_GRANT` from a caller holding `GRANT` or `ADMIN` | one account on one node, by uid and gid | its node unmounts or is recovered as dead,<br>or the region is freed |
+| process row | an `ACCESS_REQUEST` that the daemon's policy or a role row allowed | one process on one node, by its tgid and start time<br>and by its executable inode and exec generation | the writing node's GC finds that process dead,<br>its node unmounts or is recovered as dead,<br>or the region is freed |
+| account row | `FS_IOC_PERM_GRANT` from a caller holding `GRANT` or `ADMIN` | one account on one node, by uid and gid | it is revoked,<br>its node unmounts or is recovered as dead,<br>or the region is freed |
+| role row | `FS_IOC_PERM_GRANT` with kind `ROLE`, from a caller holding `GRANT` or `ADMIN` | one workload by the group and role its identity carries,<br>on every node or on one | it is revoked,<br>its writer's node unmounts or is recovered as dead,<br>or the region is freed |
+
+The kernel cannot read a process's group and role, so a role row is matched on the daemon's `ACCESS_REQUEST` answer.<br>
+That answer carries the caller's labels even when the policy refuses,<br>
+and the process row written then holds what the policy and the role rows granted together.<br>
+Only a process row keeps a region past its owner.<br>
+An account row and a role row are grants, and buy access and not lifetime.
 | lock-region row | a mount, at the table slot its own node id names | that node's daemon account | its node unmounts or is recovered as dead |
 
 ### 8.4 Freeing a Region
 
 A region is freed once nothing uses it any more.<br>
-No node may hold it open or mapped, and once its owner is gone, no delegation row may stand on it either.<br>
+No node may hold it open or mapped, and once its owner is gone, no process row may stand on it either.<br>
 `unlink` takes the name away, and the entry and its extent are freed on the first of these events.
 
 | Event | Who frees the region | Only when |
 |---|---|---|
 | `unlink` | the unlinking node | no node holds the region open or mapped |
 | the last `close` after an `unlink` | the node whose last holder let go | no other node holds it |
-| the owner process exits | the GC on the owner's node | no delegation row and no open reference stands |
-| the owner's node unmounts | that node's clean step | no peer's row or open reference stands |
-| the owner's node dies | the admin's recovery | no row or open reference stands |
+| the owner process exits | the GC on the owner's node | no process row and no open reference stands |
+| the owner's node unmounts | that node's clean step | no peer's process row or open reference stands |
+| the owner's node dies | the admin's recovery | no process row or open reference stands |
 
-A row or an open reference that still stands when the owner's node goes turns the entry `OWNER_DEAD` instead.<br>
-The owner identity is zeroed, nothing new starts on the entry, and the ordinary sweep frees it once the last row and reference go.<br>
+A process row or an open reference that still stands when the owner's node goes turns the entry `OWNER_DEAD` instead.<br>
+The owner identity is zeroed, nothing new starts on the entry, and the ordinary sweep frees it once the last process row and reference go.<br>
 Nobody takes ownership over, because ownership carries the policy context of the process that created the region.
 
 ![Freeing a region as a sequence, once the last reference goes or the owner goes with nothing holding the region. The kernel takes the mutex and the turn and drops the name's bucket slot. When the owner is gone it zeroes the whole extent, since nobody is left to clear it. A placed region steps the placement count odd. The hot line goes to DELETING, which no lookup or create accepts. Every delegation row is emptied, the acl line zeroed and the name line emptied. The hot line is published FREE with every field zero, the taken bit is cleared, the placement count goes even, and the turn and the mutex are given back. A live owner's unlink leaves the bytes in the extent, and a create clears the delegation table again before writing.](figs/free.png)
@@ -240,6 +247,7 @@ A host therefore plugs in the identity and policy systems it already runs, and c
 
 `ATTEST_REQUEST` and `ACCESS_REQUEST` carry only who asks and who owns, never the region, the operation or the node.<br>
 The daemon decides on those identities, and the kernel applies the answer to the access in hand.<br>
+The `ACCESS_REQUEST` answer also carries the caller's group and role, which the kernel matches against the region's role rows.<br>
 While the daemon is down, every create, every metadata write and every access no row covers fails with `-EAGAIN`.<br>
 An access a row already covers goes through, because the row is a decision the daemon already made.
 
@@ -330,7 +338,7 @@ Until then it stakes nobody and names no admin.
 
 Recovery runs one step per sweep, and only on the admin.<br>
 The token stays through the stake, which keeps the node id off the market while rows still name it.<br>
-A region the dead node owned goes only when no row and no other node's open reference is left on it,<br>
+A region the dead node owned goes only when no process row and no other node's open reference is left on it,<br>
 because either is what a consumer stakes to keep a region past its owner.<br>
 Rows a live node wrote are left alone, since a grant a live node holds is not this sweep's to withdraw.<br>
 Eviction goes last, because a scan skips a free slot and a premature free would leave rows no scan reaches.<br>
@@ -363,8 +371,8 @@ so no mount runs without the tick that would fence it.
 | What happened | Stops at once | Stops later | Does not stop |
 |---|---|---|---|
 | the delegated process exits | the row matches no caller,<br>since a later holder of that pid fails on the start time | the row's slot,<br>emptied by the next sweep of the node that wrote it | the region, its contents, and any bytes that process copied out |
-| the owning process exits | nothing | the region entry,<br>once no row and no open reference stands<br>and its own node's sweep reaches it,<br>its extent zeroed first | mappings other processes hold,<br>which keep the entry until they go |
-| a node stops answering | nothing on any other node | every row naming it,<br>then the regions it owned with no row left,<br>over the admin's next sweeps | that node's own mappings and writes,<br>until its own tick fences it |
+| the owning process exits | nothing | the region entry,<br>once no process row and no open reference stands<br>and its own node's sweep reaches it,<br>its extent zeroed first | mappings other processes hold,<br>which keep the entry until they go |
+| a node stops answering | nothing on any other node | every row naming it,<br>then the regions it owned with no process row left,<br>over the admin's next sweeps | that node's own mappings and writes,<br>until its own tick fences it |
 | a node unmounts | every row naming it,<br>and the regions it owned that no peer holds,<br>before its slot goes | the regions it owned that a peer still holds,<br>once that peer lets go, by the admin's sweep | that peer's mappings,<br>which read their own bytes |
 | that node's tick fences it | every file operation on the mount,<br>and every standing mapping including private copies | nothing | anything that node already copied out |
 | `unlink` | the name, and every new open of it | the extent,<br>once no node holds the region open or mapped,<br>by the node whose last holder let go | descriptors and mappings already standing,<br>which keep the extent and read their own bytes |
@@ -384,7 +392,7 @@ This one states what it leaves alone, and what a later release has to add.
 | Item | What happens |
 |---|---|
 | POSIX mode bits | They decide nothing.<br>A directory that reads `drwxr-xr-x root` still lets any user create a region in it,<br>because the rows and the daemon answer the permission check, not the bits. |
-| What the policy sees | Only the consumer's and the owner's group and role.<br>It does not see the region's name, the operation or the node,<br>so a rule cannot single out one region. |
+| What the policy sees | Only the consumer's and the owner's group and role.<br>It does not see the region's name, the operation or the node,<br>so a rule cannot single out one region.<br>An owner singles out a region with that region's role rows instead. |
 | Grant expiry | The daemon sends one with every grant, and nothing reads it.<br>A grant lasts until an event in [Grant and Access](#83-grant-and-access) ends it. |
 
 ### 12.2 Future Work

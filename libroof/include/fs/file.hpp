@@ -77,6 +77,12 @@ inline constexpr std::uint32_t AnyId = ~0U;
 // How many delegation rows one region holds. A grant past the last one answers ENOSPC.
 inline constexpr std::uint32_t MaxDelegations = 29;
 
+// In a role grant or revoke, every node rather than one.
+inline constexpr std::uint32_t AnyNode = 0;
+
+// The longest group or role a role grant takes, which is what the helper's attestation returns.
+inline constexpr std::uint32_t MaxLabelBytes = 15;
+
 // How a region's bytes are cached. Uncached has no struct pages behind it, so nothing pins it for
 // DMA, and in exchange a peer reads a write without the writer flushing.
 enum class CachePolicy : std::uint32_t
@@ -175,6 +181,14 @@ public:
     // Takes that delegation back off. A row naming the caller needs no permission. Any other row
     // needs ADMIN, and a row belongs to the node that wrote it.
     void revokePermission(std::uint32_t uid, std::uint32_t gid);
+
+    // Writes a delegation for a workload by the group and role its attested identity carries, on
+    // @node or on every node with AnyNode. GRANT and ADMIN rule it as they rule an account grant.
+    void grantRole(std::string_view group, std::string_view role, Permission perms, std::uint32_t node = AnyNode);
+
+    // Takes the role delegation this node wrote back off, and needs ADMIN. A process it already
+    // admitted keeps its own delegation until that process exits.
+    void revokeRole(std::string_view group, std::string_view role, std::uint32_t node = AnyNode);
 
     // ── accessors ──────────────────────────────────────────────────
     [[nodiscard]] std::int32_t get() const noexcept

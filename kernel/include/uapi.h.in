@@ -23,6 +23,7 @@ enum @FS_PREFIX@_constants {
 	@FS_PREFIX_UPPER@_MAX_NODE_ID = 8,
 	@FS_PREFIX_UPPER@_NAME_MAX = 63,
 	@FS_PREFIX_UPPER@_DELEG_MAX = 29, /* Max delegation entries per region */
+	@FS_PREFIX_UPPER@_LABEL_LEN = 16, /* a role grant's group or role, NUL-padded */
 };
 
 /* Permission bitmask */
@@ -32,7 +33,7 @@ enum @FS_PREFIX@_perm {
 	@FS_PREFIX_UPPER@_PERM_DELETE = 0x0004, /* unlink */
 	@FS_PREFIX_UPPER@_PERM_ADMIN = 0x0008, /* perm_set_default (ownership control) */
 	@FS_PREFIX_UPPER@_PERM_IOCTL = 0x0010, /* ioctls with no dedicated permission bit */
-	@FS_PREFIX_UPPER@_PERM_GRANT = 0x0020, /* grant an account on this node (auth proxy) */
+	@FS_PREFIX_UPPER@_PERM_GRANT = 0x0020, /* hand on what the caller holds, to an account or a role */
 	@FS_PREFIX_UPPER@_PERM_ALL = 0x003F,
 };
 
@@ -59,21 +60,33 @@ enum @FS_PREFIX@_perm {
  *
  * A @gid reaches a process row by the groups its holder carries now, since the row itself holds
  * only the one gid that holder ran under and no supplementary one.
+ *
+ * @kind ROLE names a workload by the group and role its identity carries, each 1 to
+ * @FS_PREFIX_UPPER@_LABEL_LEN - 1 bytes. Its revoke needs ADMIN, and a process row it earned outlives it.
  */
+enum @FS_PREFIX@_perm_kind {
+	@FS_PREFIX_UPPER@_PERM_KIND_ACCOUNT = 0, /* @uid and @gid, on the calling node */
+	@FS_PREFIX_UPPER@_PERM_KIND_ROLE = 1, /* @group and @role, on @node_id or on every node */
+};
+
 struct @FS_PREFIX@_perm_req {
 	__u32 uid; /* Target uid, or @FS_PREFIX_UPPER@_PERM_ANY_ID */
 	__u32 gid; /* Target gid, or @FS_PREFIX_UPPER@_PERM_ANY_ID */
 	__u32 perms; /* Permission bitmask (@FS_PREFIX_UPPER@_PERM_*) */
+	__u32 kind; /* enum @FS_PREFIX@_perm_kind */
+	char group[@FS_PREFIX_UPPER@_LABEL_LEN]; /* a role's, NUL-padded */
+	char role[@FS_PREFIX_UPPER@_LABEL_LEN]; /* a role's, NUL-padded */
+	__u32 node_id; /* the node a role row answers on, or 0 for every node */
 	__u32 reserved;
 };
 /* Spelled per language, because a C++ consumer of this header is a real one:
  * the mount helper links the daemon's client. */
 #ifdef __cplusplus
-static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 16,
-	      "@FS_PREFIX@_perm_req ioctl ABI: expected 16 bytes");
+static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 56,
+	      "@FS_PREFIX@_perm_req ioctl ABI: expected 56 bytes");
 #else
-_Static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 16,
-	       "@FS_PREFIX@_perm_req ioctl ABI: expected 16 bytes");
+_Static_assert(sizeof(struct @FS_PREFIX@_perm_req) == 56,
+	       "@FS_PREFIX@_perm_req ioctl ABI: expected 56 bytes");
 #endif
 
 /*

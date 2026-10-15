@@ -61,6 +61,14 @@ target_include_directories(postexec_other PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
 target_compile_options(postexec_other PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
+# Not a case: test_perm_role launches it to map a file under a role of its own.
+add_executable(role_consumer role_consumer.cpp)
+target_link_libraries(role_consumer PRIVATE fs-testing)
+target_include_directories(role_consumer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
+target_compile_options(role_consumer PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
+
 # Puts every mount on the metadata domain at once, so a failure elsewhere in the same run could not
 # be told from the contention this produces.
 fs_add_case(mount_stress manynode)
@@ -106,6 +114,7 @@ fs_add_case(test_perm_peer multinode)
 fs_add_case(test_perm_revoke multinode)
 fs_add_case(test_pid_reuse multinode root)
 fs_add_case(test_postexec_attack multinode pathrule)
+fs_add_case(test_perm_role multinode pathrule)
 
 # Takes every free slot in the region while it runs.
 fs_add_case(test_rat_exhaustion onenode)
@@ -128,6 +137,7 @@ target_link_libraries(test_thread_identity PRIVATE Threads::Threads)
 fs_add_case(test_unlink_live_refs multinode)
 fs_add_case(test_unlink_holders multinode)
 fs_add_case(test_gc_owner_readers multinode)
+fs_add_case(test_gc_grant_rows multinode)
 
 # Churns names and slots on both nodes for its whole run, so a case reading region_info beside it
 # would see rows come and go.
@@ -229,3 +239,7 @@ set_tests_properties(rat_place_race PROPERTIES LABELS lifecycle SKIP_RETURN_CODE
 target_compile_definitions(test_postexec_attack PRIVATE
     FS_POSTEXEC_OTHER="$<TARGET_FILE:postexec_other>")
 add_dependencies(test_postexec_attack postexec_other)
+
+target_compile_definitions(test_perm_role PRIVATE
+    FS_ROLE_CONSUMER="$<TARGET_FILE:role_consumer>")
+add_dependencies(test_perm_role role_consumer)

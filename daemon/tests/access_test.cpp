@@ -4,8 +4,8 @@
 // tests/access_test.cpp -- the ACCESS path end to end: attest the consumer, then decide the policy.
 //
 // The daemon serves over a socketpair with a real identity backend and a real rego policy. An access
-// for a consumer whose group matches the owner is granted with perms; one whose group does not is
-// denied. The real channel is never opened.
+// for a consumer whose group matches the owner is granted with perms; one whose group does not gets
+// no bits, and both carry the consumer's labels back. The real channel is never opened.
 
 #include <unistd.h>
 
@@ -42,6 +42,7 @@ using fsdaemon::serve::FsChannel;
 using fsdaemon::serve::RequestHandler;
 using fsdaemon::serve::ServeLoop;
 using fsdaemon::serve::Services_t;
+using fsdaemon::wire::readName;
 using fsdaemon::wire::writeName;
 
 const std::string PolicyRego = std::string{"package "} + std::string{fsdaemon::name::FsName} + R"(.authz
@@ -114,10 +115,17 @@ void checkAllowAndDeny(fsdaemon::probe::Context& ctx)
                allow ? allow->payload.granted_perms : 0);
     ctx.check(allow && allow->payload.expiry_secs == 3600, "it carries the policy expiry");
 
-    // Owner in another group: denied.
+    ctx.check(allow && readName(allow->payload.group) == "prod" && readName(allow->payload.role) == "llm-worker",
+              "it carries the consumer's labels");
+
+    // Owner in another group: the policy grants nothing, and the labels still come back for the
+    // region's role rows to judge.
     sendAccess(pair.getMine(), 32, "other", "role");
     const auto deny = readResponse<FsDaemonResponse>(pair.getMine(), FS_DAEMON_MSG_ACCESS_RESPONSE);
-    ctx.check(deny.has_value() && deny->payload.status == -EACCES, "a cross-group access is denied");
+    ctx.check(deny.has_value() && deny->payload.status == 0 && deny->payload.granted_perms == 0U,
+              "a cross-group access gets no bits from the policy");
+    ctx.check(deny && readName(deny->payload.group) == "prod" && readName(deny->payload.role) == "llm-worker",
+              "the refusal carries the consumer's labels");
 
     loop.stop();
     runner.join();

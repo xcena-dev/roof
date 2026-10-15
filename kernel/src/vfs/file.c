@@ -291,25 +291,26 @@ static int file_daemon_ask_access(struct fs_sb_info *sbi, struct fs_inode_info *
 	 * unexpected flags that could be reinterpreted by future bits */
 	u32 known_mask = FS_PERM_READ | FS_PERM_WRITE | FS_PERM_GRANT | FS_PERM_ADMIN;
 	u32 granted = resp.access.granted_perms & known_mask;
-	if (granted == 0) {
-		pr_debug("access upcall: helper returned no usable perms 0x%x\n", resp.access.granted_perms);
-		return -EACCES;
-	}
 
-	/* Intersect granted with requested op to enforce least privilege */
-	if ((granted & required_perms) != required_perms) {
-		pr_debug("access upcall: granted_perms=0x%x insufficient for required=0x%x\n", granted, required_perms);
-		return -EACCES;
-	}
+	/* The labels the helper attested, which the region's role rows match on. Labels that do not fit
+	 * a row's shape match none, and the policy's answer stands alone. */
+	struct acl_role_key labels = {};
+	const bool labelled = acl_copy_label(labels.group, resp.access.group) &&
+			      acl_copy_label(labels.role, resp.access.role);
 
-	/* The row daemon's answer earns, written whole. */
-	ret = acl_grant_deleg_caller(sbi, xi->rat_entry_id, granted);
+	/* The row the answer earns, written whole. EACCES is the policy and the role rows together
+	 * leaving a bit of the request out. */
+	ret = acl_grant_deleg_caller(sbi, xi->rat_entry_id, granted, labelled ? &labels : NULL, required_perms);
+	if (ret == -EACCES) {
+		pr_debug("access upcall: policy 0x%x and role rows leave required=0x%x short\n", granted, required_perms);
+		return ret;
+	}
 	if (ret) {
 		pr_warn("access upcall: deleg_grant failed rat_entry=%u ret=%d\n", xi->rat_entry_id, ret);
 		return ret;
 	}
 
-	pr_debug("access upcall: delegation written pid=%d rat_entry=%u perms=0x%x\n", current->tgid, xi->rat_entry_id, granted);
+	pr_debug("access upcall: delegation written pid=%d rat_entry=%u\n", current->tgid, xi->rat_entry_id);
 	return 0;
 }
 
@@ -735,12 +736,33 @@ s32 file_revoke_task_mappings(struct fs_sb_info *sbi, pid_t tgid)
 /* ── ioctl handlers: the ones that take fs_perm_req ──────────────────── */
 /* Each unpacks the record and nothing more. Screening the fields and logging the outcome belong
  * beside the write, so a caller reaching acl_* another way gets both. */
+/* The role a record names. EINVAL for a label no attestation returns, or a node no mount can hold. */
+static s32 file_read_role_key(const struct fs_perm_req *preq, struct acl_role_key *key)
+{
+	if (!acl_copy_label(key->group, preq->group) || !acl_copy_label(key->role, preq->role))
+		return -EINVAL;
+	if (preq->node_id > FS_MAX_NODE_ID)
+		return -EINVAL;
+
+	key->target_node = preq->node_id;
+	return 0;
+}
+
 static s32 file_ioctl_perm_grant(struct fs_sb_info *sbi, struct fs_inode_info *xi, struct fs_perm_req *preq)
 {
 	if (file_is_lock_region(sbi, xi->rat_entry_id))
 		return -EPERM;
 
-	return acl_grant_deleg_account(sbi, xi->rat_entry_id, preq->uid, preq->gid, preq->perms);
+	if (preq->kind == FS_PERM_KIND_ACCOUNT)
+		return acl_grant_deleg_account(sbi, xi->rat_entry_id, preq->uid, preq->gid, preq->perms);
+	if (preq->kind != FS_PERM_KIND_ROLE)
+		return -EINVAL;
+
+	struct acl_role_key key;
+	s32 ret = file_read_role_key(preq, &key);
+	if (ret)
+		return ret;
+	return acl_grant_deleg_role(sbi, xi->rat_entry_id, &key, preq->perms);
 }
 
 static s32 file_ioctl_perm_revoke(struct fs_sb_info *sbi, struct fs_inode_info *xi, struct fs_perm_req *preq)
@@ -748,7 +770,16 @@ static s32 file_ioctl_perm_revoke(struct fs_sb_info *sbi, struct fs_inode_info *
 	if (file_is_lock_region(sbi, xi->rat_entry_id))
 		return -EPERM;
 
-	return acl_revoke_deleg_account(sbi, xi->rat_entry_id, preq->uid, preq->gid);
+	if (preq->kind == FS_PERM_KIND_ACCOUNT)
+		return acl_revoke_deleg_account(sbi, xi->rat_entry_id, preq->uid, preq->gid);
+	if (preq->kind != FS_PERM_KIND_ROLE)
+		return -EINVAL;
+
+	struct acl_role_key key;
+	s32 ret = file_read_role_key(preq, &key);
+	if (ret)
+		return ret;
+	return acl_revoke_deleg_role(sbi, xi->rat_entry_id, &key);
 }
 
 /* No lock-region guard here, unlike the two above: the default names no slot, and the daemon's own

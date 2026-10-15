@@ -55,6 +55,16 @@ fsdaemon::Creds_t readCreds(const fsdaemon::FsDaemonAccessRequest& request)
     return facts;
 }
 
+// The wire keeps FS_DAEMON_IDENT_LEN - 1 bytes of a label.
+constexpr std::uint64_t LabelMax = FS_DAEMON_IDENT_LEN - 1;
+
+// A label that would be cut would reach the kernel as another tenant's prefix, and an empty one
+// names nobody, so neither is sent.
+bool isSendableLabel(std::string_view label)
+{
+    return !label.empty() && label.size() <= LabelMax;
+}
+
 // The fields every audit line carries, whatever else the caller goes on to fill in.
 fsdaemon::audit::Record_t startRecord(fsdaemon::audit::Record_t::Kind kind, std::uint64_t seq, std::uint32_t pid,
                                       std::chrono::steady_clock::time_point began)
@@ -97,15 +107,8 @@ void RequestHandler::handleAttest(FsChannel& channel, const Frame_t& frame) noex
     {
         auto stamp = markStage();
         const auto identity = identity_.attest(static_cast<pid_t>(request->owner_pid), facts);  // NOLINT(misc-include-cleaner) pid_t arrives with identity::IdentityProvider::attest()'s declaration in identity/base.hpp
-        // The wire keeps FS_DAEMON_IDENT_LEN - 1 bytes of a label. One that would be cut would
-        // reach the kernel as another tenant's prefix, and an empty one names nobody, so both
-        // are denials here rather than truncations on the way out.
-        constexpr std::uint64_t LabelMax = FS_DAEMON_IDENT_LEN - 1;
-        const auto isSendable = [](const std::string& label)
-        {
-            return !label.empty() && label.size() <= LabelMax;
-        };
-        if (!isSendable(identity.group) || !isSendable(identity.role))
+        // An owner whose labels cannot be sent is denied rather than given cut ones.
+        if (!isSendableLabel(identity.group) || !isSendableLabel(identity.role))
         {
             throw identity::BridgeError{std::string{"identity label empty or longer than "}
                                             .append(std::to_string(LabelMax))
@@ -169,14 +172,19 @@ void RequestHandler::handleAccess(FsChannel& channel, const Frame_t& frame) noex
         stamp = foldStage("attest", stamp);
         const auto decision = policy_->decide(consumer, ownerGroup, ownerRole);
         stamp = foldStage("decide", stamp);
+        // The labels go back whatever the policy said, so a role row the owner wrote can still admit
+        // the consumer. A denial is then no bits rather than an error.
+        const bool isLabelled = isSendableLabel(consumer.group) && isSendableLabel(consumer.role);
+        const ConsumerLabels_t labels = isLabelled ? ConsumerLabels_t{consumer.group, consumer.role}
+                                                   : ConsumerLabels_t{};
         if (decision.allow)
         {
-            channel.sendAccessResponse(frame.header.seq, 0, decision.grantedPerms,
-                                       decision.expirySecs);
+            channel.sendAccessResponse(frame.header.seq, 0, decision.grantedPerms, decision.expirySecs,
+                                       labels);
         }
         else
         {
-            channel.sendAccessResponse(frame.header.seq, -EACCES, 0, 0);
+            channel.sendAccessResponse(frame.header.seq, 0, 0, 0, labels);
         }
         stamp = foldStage("reply", stamp);
         if (audit_ != nullptr)
