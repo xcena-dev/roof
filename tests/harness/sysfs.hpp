@@ -45,6 +45,11 @@ constexpr const char* PoolInfoPath = "/sys/fs/" FS_NAME_STR "/pool_info";
     return "/sys/fs/" FS_NAME_STR "/node" + std::to_string(nodeId) + "/test/meta_lock";
 }
 
+[[nodiscard]] inline std::string delegReadsPath(std::uint32_t nodeId)
+{
+    return "/sys/fs/" FS_NAME_STR "/node" + std::to_string(nodeId) + "/test/deleg_reads";
+}
+
 // Unlike the test/ files above, this one is the daemon's own and needs no root.
 [[nodiscard]] inline std::string daemonStatePath(std::uint32_t nodeId)
 {
@@ -357,6 +362,38 @@ struct MetaTurns_t
         return std::nullopt;
     }
     return MetaTurns_t{*taken, *refused};
+}
+
+// How many delegation rows @nodeId's scans have read since its module loaded, by scan. A sweep
+// counts under its own name, so a case reading one path's delta is not moved by it.
+struct DelegReads_t
+{
+    std::uint64_t check{0};
+    std::uint64_t role{0};
+    std::uint64_t slot{0};
+    std::uint64_t revoke{0};
+    std::uint64_t sweep{0};
+};
+
+// nullopt when the file is not there, which is a module built without its test attributes.
+[[nodiscard]] inline std::optional<DelegReads_t> readDelegReads(std::uint32_t nodeId)
+{
+    std::ifstream source{delegReadsPath(nodeId)};
+    std::string line;
+    if (!source || !std::getline(source, line))
+    {
+        return std::nullopt;
+    }
+    const auto check = readTagged(line, "check=");
+    const auto role = readTagged(line, "role=");
+    const auto slot = readTagged(line, "slot=");
+    const auto revoke = readTagged(line, "revoke=");
+    const auto sweep = readTagged(line, "sweep=");
+    if (!check || !role || !slot || !revoke || !sweep)
+    {
+        return std::nullopt;
+    }
+    return DelegReads_t{*check, *role, *slot, *revoke, *sweep};
 }
 
 // Every request @nodeId's channel has queued, answered or not. A caller a standing row already

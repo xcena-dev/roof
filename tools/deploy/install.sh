@@ -40,7 +40,9 @@ install.sh -- groups, modes and units for running ${FS_NAME} unprivileged.
   --mount PATH[=DEV]    a mount point, on DEV or on --device; repeat for more (default: /mnt/${FS_NAME})
   --no-start            write everything but leave the mounts down
   --reset-cfg           replace ${CONFIG_FILE} and the policy with this tree's examples
-  --skip-build          install what is already built rather than building it first
+  --skip-build          install what is already built, building only a part that is not there
+  --tools-build DIR     where the helpers are built (default: ${TOOLS_BUILD})
+  --lib-build DIR       where the library is built (default: ${LIB_BUILD})
   --prefix PATH         where the library and its headers go (default: /usr/local)
   --help                this
 
@@ -63,6 +65,8 @@ while [ $# -gt 0 ]; do
 	--no-start) START=false; shift ;;
 	--reset-cfg) RESET_CFG=true; shift ;;
 	--skip-build) BUILD=false; shift ;;
+	--tools-build) TOOLS_BUILD="$2"; shift 2 ;;
+	--lib-build) LIB_BUILD="$2"; shift 2 ;;
 	--prefix) PREFIX="$2"; shift 2 ;;
 	--mount)
 		if [ "${MOUNTS_SET:-false}" = false ]; then
@@ -186,19 +190,36 @@ asAccount() {
 	fi
 }
 
-if [ "$BUILD" = true ]; then
-	echo "install.sh: building the module, the helpers and the library"
+# A skipped build still makes a part that is missing, since the helpers and the library build under
+# /tmp by default and a reboot empties it.
+BUILD_MODULE=$BUILD
+BUILD_TOOLS=$BUILD
+BUILD_LIB=$BUILD
+[ -f "${ROOT}/kernel/build/${FS_NAME}.ko" ] || BUILD_MODULE=true
+for helper in "mount.${FS_NAME}" "umount.${FS_NAME}"; do
+	[ -x "${TOOLS_BUILD}/${helper}" ] || BUILD_TOOLS=true
+done
+[ -f "${LIB_BUILD}/libroof/lib${LIB_NAME}.a" ] || BUILD_LIB=true
+
+if [ "$BUILD_MODULE" = true ] || [ "$BUILD_TOOLS" = true ] || [ "$BUILD_LIB" = true ]; then
+	echo "install.sh: building the module, the helpers and the library, as far as each is missing"
 	for dir in "${ROOT}/kernel/build" "$TOOLS_BUILD" "$LIB_BUILD"; do
 		if [ -d "$dir" ] && [ "$(stat -c '%U' "$dir")" != "${ACCOUNT:-root}" ]; then
 			chown -R "${ACCOUNT:-root}" "$dir"
 		fi
 	done
-	asAccount make -C "${ROOT}/kernel" > /dev/null
-	asAccount cmake -S "${ROOT}/tools" -B "$TOOLS_BUILD" > /dev/null
-	asAccount cmake --build "$TOOLS_BUILD" > /dev/null
-	asAccount cmake -S "$ROOT" -B "$LIB_BUILD" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-		-DFS_PUBLISH_NAMESPACE=ON > /dev/null
-	asAccount cmake --build "$LIB_BUILD" > /dev/null
+	if [ "$BUILD_MODULE" = true ]; then
+		asAccount make -C "${ROOT}/kernel" > /dev/null
+	fi
+	if [ "$BUILD_TOOLS" = true ]; then
+		asAccount cmake -S "${ROOT}/tools" -B "$TOOLS_BUILD" > /dev/null
+		asAccount cmake --build "$TOOLS_BUILD" > /dev/null
+	fi
+	if [ "$BUILD_LIB" = true ]; then
+		asAccount cmake -S "$ROOT" -B "$LIB_BUILD" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+			-DFS_PUBLISH_NAMESPACE=ON > /dev/null
+		asAccount cmake --build "$LIB_BUILD" > /dev/null
+	fi
 fi
 
 install -d -m 0755 "$MODULE_DIR"

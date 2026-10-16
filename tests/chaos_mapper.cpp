@@ -20,6 +20,13 @@
  *
  * --grant takes an optional uid, so a case can write a row that names somebody other than the
  * caller. --revoke <uid> takes such a row back off. Both name gid as ANY.
+ *
+ * --grant-role <perms> <group> <role> and --revoke-role <group> <role> do the same for a role row,
+ * which names a workload and any node. --hold-read maps the region read-only and waits like the
+ * default mode, so a node with no row for the caller asks its helper before the map lands.
+ *
+ * --own <perms> sets the default like --default and then maps and waits like the default mode, so
+ * the region keeps a live owner, which a sweep never reclaims, for as long as the case needs it.
  */
 
 #include <fcntl.h>
@@ -31,11 +38,15 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <string_view>
 
 #include "fs/file.hpp"
 #include "fs/testing.hpp"
@@ -63,57 +74,168 @@ void sleepPoll()
     nanosleep(&slice, nullptr);
 }
 
-/* Reaches every node, unlike a row. The owner is the only caller ADMIN admits. */
-std::int32_t setDefaultPerms(std::int32_t region, std::uint32_t perms)
+using FsPermReq = struct fs_perm_req;
+
+/* What every failure here exits with. 1 stays for a mapping that outlived the wait. */
+constexpr std::int32_t FailStatus = 2;
+
+/* argv[1] and argv[2] are the mount and the name, argv[3] the flag, and its arguments follow. */
+constexpr std::int32_t FlagArg = 3;
+constexpr std::int32_t FirstValueArg = FlagArg + 1;
+
+/* A number as the shell passes it, decimal or 0x hex. 0 for text that is not one. */
+std::uint32_t parseNumber(std::string_view text)
 {
-    struct fs_perm_req request = {};
-    request.uid = FS_PERM_ANY_ID;
-    request.gid = FS_PERM_ANY_ID;
-    request.perms = perms;
-
-    if (ioctl(region, FS_IOC_PERM_SET_DEFAULT, &request) != 0)
+    constexpr std::string_view HexPrefix = "0x";
+    constexpr std::int32_t HexBase = 16;
+    std::int32_t base = 10;
+    if (text.substr(0, HexPrefix.size()) == HexPrefix)
     {
-        fprintf(stderr, "perm_set_default: %s\n", strerror(errno));
-        return 2;
+        text.remove_prefix(HexPrefix.size());
+        base = HexBase;
     }
-
-    printf("defaulted\n");
-    return 0;
+    std::uint32_t value = 0;
+    std::from_chars(text.data(), text.data() + text.size(), value, base);
+    return value;
 }
 
-/* Names an account, so the row outlives the process that asked for it. */
-std::int32_t grantAccount(std::int32_t region, std::uint32_t perms, std::uint32_t uid)
+/* An account row names its uid with the gid left open, so it outlives the process that asked. */
+FsPermReq makeAccountRequest(std::uint32_t uid, std::uint32_t perms)
 {
-    struct fs_perm_req request = {};
+    FsPermReq request{};
     request.uid = uid;
     request.gid = FS_PERM_ANY_ID;
     request.perms = perms;
+    return request;
+}
 
-    if (ioctl(region, FS_IOC_PERM_GRANT, &request) != 0)
+/* A role row names a workload by its labels, outlives the process and answers on every node. */
+FsPermReq makeRoleRequest(const char* group, const char* role, std::uint32_t perms)
+{
+    FsPermReq request{};
+    request.kind = FS_PERM_KIND_ROLE;
+    request.perms = perms;
+    strncpy(request.group, group, sizeof(request.group) - 1);
+    strncpy(request.role, role, sizeof(request.role) - 1);
+    return request;
+}
+
+/* One permission ioctl. Prints @done, which the case reads, or the errno under @what. */
+std::int32_t sendRequest(std::int32_t region, std::uint64_t command, FsPermReq request, const char* what,
+                         const char* done)
+{
+    if (ioctl(region, command, &request) != 0)
     {
-        fprintf(stderr, "perm_grant: %s\n", strerror(errno));
-        return 2;
+        fprintf(stderr, "%s: %s\n", what, strerror(errno));
+        return FailStatus;
     }
 
-    printf("granted\n");
+    printf("%s\n", done);
     return 0;
 }
 
-/* Takes the row naming @uid back off. Own row or not is the module's question, not this one's. */
-std::int32_t revokeAccount(std::int32_t region, std::uint32_t uid)
+/* What one run does. Hold maps read-write and waits, and is what no flag asks for. */
+enum class Mode
 {
-    struct fs_perm_req request = {};
-    request.uid = uid;
-    request.gid = FS_PERM_ANY_ID;
+    Hold,
+    HoldRead,
+    Place,
+    Grant,
+    Default,
+    Own,
+    Revoke,
+    GrantRole,
+    RevokeRole,
+};
 
-    if (ioctl(region, FS_IOC_PERM_REVOKE, &request) != 0)
+/* A flag and how many arguments may follow it. */
+struct ModeFlag_t
+{
+    std::string_view flag;
+    Mode mode;
+    std::int32_t minArgs;
+    std::int32_t maxArgs;
+};
+
+constexpr std::array<ModeFlag_t, 8> ModeFlags{{
+    {"--place", Mode::Place, 0, 0},
+    {"--hold-read", Mode::HoldRead, 0, 0},
+    {"--grant", Mode::Grant, 1, 2},
+    {"--default", Mode::Default, 1, 1},
+    {"--own", Mode::Own, 1, 1},
+    {"--revoke", Mode::Revoke, 1, 1},
+    {"--grant-role", Mode::GrantRole, 3, 3},
+    {"--revoke-role", Mode::RevokeRole, 2, 2},
+}};
+
+/* The mode argv names, or nullopt for an unknown flag or the wrong number of arguments after it. */
+std::optional<Mode> parseMode(std::int32_t argc, char** argv)
+{
+    if (argc < FlagArg)
     {
-        fprintf(stderr, "perm_revoke: %s\n", strerror(errno));
-        return 2;
+        return std::nullopt;
+    }
+    if (argc == FlagArg)
+    {
+        return Mode::Hold;
     }
 
-    printf("revoked\n");
-    return 0;
+    const std::string_view flag{argv[FlagArg]};
+    const auto found = std::find_if(ModeFlags.begin(), ModeFlags.end(),
+                                    [flag](const ModeFlag_t& entry)
+                                    {
+                                        return entry.flag == flag;
+                                    });
+    const std::int32_t given = argc - FirstValueArg;
+    if (found == ModeFlags.end() || given < found->minArgs || given > found->maxArgs)
+    {
+        return std::nullopt;
+    }
+    return found->mode;
+}
+
+/* The modes that end once their request is sent. nullopt for the ones that go on to map, which
+ * --own does after it has opened the region to every node. */
+std::optional<std::int32_t> runRequestMode(std::int32_t region, Mode mode, std::int32_t argc, char** argv)
+{
+    const char* const* values = argv + FirstValueArg;
+    switch (mode)
+    {
+        case Mode::Place:
+            printf("placed\n");
+            return 0;
+        case Mode::Grant:
+        {
+            const std::uint32_t uid = argc > FirstValueArg + 1 ? parseNumber(values[1]) : getuid();
+            return sendRequest(region, FS_IOC_PERM_GRANT, makeAccountRequest(uid, parseNumber(values[0])), "perm_grant",
+                               "granted");
+        }
+        case Mode::Default:
+            /* Reaches every node, unlike a row. The owner is the only caller ADMIN admits. */
+            return sendRequest(region, FS_IOC_PERM_SET_DEFAULT, makeAccountRequest(FS_PERM_ANY_ID, parseNumber(values[0])),
+                               "perm_set_default", "defaulted");
+        case Mode::Own:
+        {
+            const auto status = sendRequest(region, FS_IOC_PERM_SET_DEFAULT,
+                                            makeAccountRequest(FS_PERM_ANY_ID, parseNumber(values[0])), "perm_set_default",
+                                            "defaulted");
+            return status == 0 ? std::nullopt : std::optional<std::int32_t>{status};
+        }
+        case Mode::Revoke:
+            /* Own row or not is the module's question, not this one's. */
+            return sendRequest(region, FS_IOC_PERM_REVOKE, makeAccountRequest(parseNumber(values[0]), 0), "perm_revoke",
+                               "revoked");
+        case Mode::GrantRole:
+            return sendRequest(region, FS_IOC_PERM_GRANT, makeRoleRequest(values[1], values[2], parseNumber(values[0])),
+                               "perm_grant role", "granted");
+        case Mode::RevokeRole:
+            return sendRequest(region, FS_IOC_PERM_REVOKE, makeRoleRequest(values[0], values[1], 0), "perm_revoke role",
+                               "revoked");
+        case Mode::Hold:
+        case Mode::HoldRead:
+            return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -122,22 +244,14 @@ int main(int argc, char** argv)
 {
     static const char* const Usage =
         "usage: chaos_mapper <mount> <name> "
-        "[--place | --grant <perms> [uid] | --default <perms> | --revoke <uid>]\n";
+        "[--place | --hold-read | --grant <perms> [uid] | --default <perms> | --own <perms> | --revoke <uid> |\n"
+        "                      --grant-role <perms> <group> <role> | --revoke-role <group> <role>]\n";
 
-    if (argc < 3 || argc > 6)
+    const auto mode = parseMode(argc, argv);
+    if (!mode)
     {
         fprintf(stderr, "%s", Usage);
-        return 2;
-    }
-
-    const bool placeOnly = argc == 4 && strcmp(argv[3], "--place") == 0;
-    const bool grantOnly = argc >= 5 && strcmp(argv[3], "--grant") == 0;
-    const bool defaultOnly = argc == 5 && strcmp(argv[3], "--default") == 0;
-    const bool revokeOnly = argc == 5 && strcmp(argv[3], "--revoke") == 0;
-    if (argc > 3 && !placeOnly && !grantOnly && !defaultOnly && !revokeOnly)
-    {
-        fprintf(stderr, "%s", Usage);
-        return 2;
+        return FailStatus;
     }
 
     /* O_CLOEXEC is not optional here: the module refuses a descriptor without it. */
@@ -145,7 +259,7 @@ int main(int argc, char** argv)
     if (region < 0)
     {
         fprintf(stderr, "open: %s\n", strerror(errno));
-        return 2;
+        return FailStatus;
     }
 
     /* Placement is once and for all: a second ftruncate is what WORM refuses, so an already
@@ -154,47 +268,34 @@ int main(int argc, char** argv)
     if (fstat(region, &placed) != 0)
     {
         fprintf(stderr, "fstat: %s\n", strerror(errno));
-        return 2;
+        return FailStatus;
     }
 
     if (placed.st_size == 0 && ftruncate(region, static_cast<::off_t>(RegionSize)) != 0)
     {
         fprintf(stderr, "ftruncate: %s\n", strerror(errno));
-        return 2;
+        return FailStatus;
     }
 
-    if (placeOnly)
+    if (const auto done = runRequestMode(region, *mode, argc, argv))
     {
-        printf("placed\n");
-        return 0;
+        return *done;
     }
 
-    if (grantOnly)
-    {
-        const auto perms = static_cast<std::uint32_t>(strtoul(argv[4], nullptr, 0));
-        const auto uid = argc == 6 ? static_cast<std::uint32_t>(strtoul(argv[5], nullptr, 0)) : getuid();
-        return grantAccount(region, perms, uid);
-    }
-
-    if (defaultOnly)
-    {
-        return setDefaultPerms(region, static_cast<std::uint32_t>(strtoul(argv[4], nullptr, 0)));
-    }
-
-    if (revokeOnly)
-    {
-        return revokeAccount(region, static_cast<std::uint32_t>(strtoul(argv[4], nullptr, 0)));
-    }
-
-    auto* const mapping = mmap(nullptr, static_cast<::size_t>(RegionSize), PROT_READ | PROT_WRITE, MAP_SHARED, region, 0);
+    const bool holdRead = *mode == Mode::HoldRead;
+    const std::int32_t protection = holdRead ? PROT_READ : (PROT_READ | PROT_WRITE);
+    auto* const mapping = mmap(nullptr, static_cast<::size_t>(RegionSize), protection, MAP_SHARED, region, 0);
     if (mapping == MAP_FAILED)
     {
         fprintf(stderr, "mmap: %s\n", strerror(errno));
-        return 2;
+        return FailStatus;
     }
 
     auto* const cell = static_cast<volatile std::uint8_t*>(mapping);
-    *cell = 0x5a;
+    if (!holdRead)
+    {
+        *cell = 0x5a;
+    }
 
     struct sigaction action = {};
     action.sa_handler = onBusError;
@@ -202,7 +303,7 @@ int main(int argc, char** argv)
     if (sigaction(SIGBUS, &action, nullptr) != 0)
     {
         fprintf(stderr, "sigaction: %s\n", strerror(errno));
-        return 2;
+        return FailStatus;
     }
 
     printf("mapped\n");

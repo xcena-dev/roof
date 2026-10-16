@@ -25,6 +25,7 @@
 #include "access/meta_lock.h"
 #include "core.h"
 #include "layout/layout_access.h"
+#include "util/bitmap.h"
 
 /* A bit no permission names, which no row may carry and no caller may ask a write to store. */
 static bool acl_has_unknown_perms(u32 perms)
@@ -149,6 +150,33 @@ void acl_read_caller_identity(struct acl_caller_identity *out)
 	out->exe_inode_ino = 0;
 	out->exe_inode_dev = 0;
 	(void)acl_get_exe_id(&out->exe_inode_ino, &out->exe_inode_dev);
+}
+
+/* Indexed without the accessor's range check: the walk starts from a mask cut to the table's rows. */
+bool acl_next_taken_row(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry, enum test_deleg_scan scan,
+			struct acl_taken_row *pos)
+{
+	if (!pos->rows_left)
+		return false;
+
+	pos->idx = bits_take_lowest(&pos->rows_left);
+	pos->row = &rat_entry->deleg_entries[pos->idx];
+	cxl_get_cacheline(&pos->line, pos->row);
+	test_count_deleg_read(sbi->node_id, scan);
+	return true;
+}
+
+void acl_clear_taken_rows(struct layout_rat_entry *rat_entry, union layout_rat_acl_copy *acl, u32 rows)
+{
+	union layout_rat_hot_copy hot;
+	cxl_get_layout_rat_hot(&hot, &rat_entry->hot);
+	if (hot.local.region_type == LAYOUT_REGION_LOCK)
+		rows &= ~(u32)ACL_DELEG_NODE_ROWS;
+	if (!(acl->local.deleg_taken & rows))
+		return;
+
+	acl->local.deleg_taken &= ~rows;
+	cxl_set_layout_rat_acl(&rat_entry->acl, acl);
 }
 
 /* An ACTIVE row this node wrote. node_id is exact, so a row a crash left at 0 matches nobody, and
@@ -348,18 +376,12 @@ static u32 acl_read_granted(struct fs_sb_info *sbi, struct layout_rat_entry *rat
 	struct acl_caller_identity caller;
 	acl_read_caller_identity(&caller);
 
-	for (u32 idx = 0; idx < acl->local.deleg_bound; idx++) {
-		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, idx);
-		if (!deleg_entry)
-			continue;
-
-		struct cxl_cacheline line;
-		cxl_get_cacheline(&line, deleg_entry);
-		if (!acl_match_deleg_caller(&line, sbi->node_id, &caller))
+	acl_for_each_taken_row(sbi, rat_entry, acl->local.deleg_taken, TEST_DELEG_SCAN_CHECK, pos) {
+		if (!acl_match_deleg_caller(&pos.line, sbi->node_id, &caller))
 			continue;
 
 		union acl_deleg_process_copy head;
-		cxl_decode_acl_deleg_process(&head, &line);
+		cxl_decode_acl_deleg_process(&head, &pos.line);
 		u32 grant = head.local.perms & candidate;
 		if (!grant)
 			continue;
@@ -410,80 +432,51 @@ s32 acl_check_permission(struct fs_sb_info *sbi, u32 rat_entry_id, u32 required_
 	return have == required_perms ? 0 : -EACCES;
 }
 
-/*
- * Raise the scan bound to cover @row, which is one past its slot. Called after the row lands, so a
- * scan that reads the new bound finds a finished row under it.
- *
- * @acl is the line the caller read under sbi->meta_lock and goes back changed or not at all. The
- * bound shares that line with default_perms and the owner fields, so a copy read before the lock
- * would put back whatever another writer had since changed.
- */
-static void acl_raise_deleg_bound(struct layout_rat_entry *rat_entry, union layout_rat_acl_copy *acl,
-				  const union acl_deleg_entry *row)
+/* Sets @row's taken bit before the caller writes the row. @acl must be the copy read under meta_lock,
+ * since the mask shares its line with default_perms and the owner fields. */
+static void acl_mark_taken_row(struct layout_rat_entry *rat_entry, union layout_rat_acl_copy *acl,
+			       const union acl_deleg_entry *row)
 {
-	u32 want = (u32)(row - rat_entry->deleg_entries) + 1;
-
-	if (want <= acl->local.deleg_bound)
+	const u32 bit = 1U << (u32)(row - rat_entry->deleg_entries);
+	if (acl->local.deleg_taken & bit)
 		return;
 
-	acl->local.deleg_bound = want;
+	acl->local.deleg_taken |= bit;
 	cxl_set_layout_rat_acl(&rat_entry->acl, acl);
 }
 
-/* One pass for the slot a row naming @want belongs in: that holder's own row, or the first free one
- * when it has none, and NULL when the table holds neither.
- *
- * @bound stops the scan, because no ACTIVE row stands at or above it and one read there answers for
- * the whole rest of the table. @out_line is the row read at the returned slot, so its state says
- * which of the two the caller got: ACTIVE a row to widen, EMPTY a slot to fill. */
-static union acl_deleg_entry *acl_find_deleg_slot(struct layout_rat_entry *rat_entry, u32 node_id,
-						  u32 bound, const struct acl_deleg_target *want,
-						  struct cxl_cacheline *out_line)
+/* The slot for a row naming @want: its holder's own row, else a taken EMPTY row, else the lowest untaken
+ * one, or NULL. @out_line is that row as read, zeros for an untaken one, so its state tells them apart. */
+static union acl_deleg_entry *
+acl_find_deleg_slot(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry,
+		    u32 taken, const struct acl_deleg_target *want,
+		    struct cxl_cacheline *out_line)
 {
 	union acl_deleg_entry *free_row = NULL;
 	struct cxl_cacheline free_line = {};
 
-	if (bound > ACL_DELEG_MAX_ENTRIES)
-		bound = ACL_DELEG_MAX_ENTRIES;
-
-	for (u32 idx = 0; idx < bound; idx++) {
-		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, idx);
-		if (!deleg_entry)
-			continue;
-
-		/* One whole-line read, so state, node_id and pid come from the same
-		 * instant rather than from three separate trips to the medium. */
-		struct cxl_cacheline line;
-		cxl_get_cacheline(&line, deleg_entry);
+	acl_for_each_taken_row(sbi, rat_entry, taken, TEST_DELEG_SCAN_SLOT, pos) {
 		union acl_deleg_process_copy head;
-		cxl_decode_acl_deleg_process(&head, &line);
+		cxl_decode_acl_deleg_process(&head, &pos.line);
 		if (head.local.state == ACL_DELEG_EMPTY) {
 			if (!free_row) {
-				free_row = deleg_entry;
-				free_line = line;
+				free_row = pos.row;
+				free_line = pos.line;
 			}
 			continue;
 		}
 
-		if (!acl_match_deleg_target(&line, node_id, want))
+		if (!acl_match_deleg_target(&pos.line, sbi->node_id, want))
 			continue;
 
-		*out_line = line;
-		return deleg_entry;
+		*out_line = pos.line;
+		return pos.row;
 	}
 
-	/* The first slot at the bound, read rather than assumed: the bound says no row was written
-	 * there, and this says none is there now. */
-	if (!free_row && bound < ACL_DELEG_MAX_ENTRIES) {
-		union acl_deleg_entry *fresh = layout_get_deleg_entry(rat_entry, bound);
-		if (fresh) {
-			cxl_get_cacheline(&free_line, fresh);
-			union acl_deleg_process_copy head;
-			cxl_decode_acl_deleg_process(&head, &free_line);
-			if (head.local.state == ACL_DELEG_EMPTY)
-				free_row = fresh;
-		}
-	}
+	/* Not read: no ACTIVE row sits under a clear bit, and the caller writes the whole line. A full
+	 * table names the slot past its end, which the accessor answers with NULL. */
+	if (!free_row)
+		free_row = layout_get_deleg_entry(rat_entry, bits_find_lowest_clear(taken, ACL_DELEG_MAX_ENTRIES));
 
 	*out_line = free_line;
 	return free_row;
@@ -491,22 +484,16 @@ static union acl_deleg_entry *acl_find_deleg_slot(struct layout_rat_entry *rat_e
 
 /* What the role rows standing for @labels grant on this node. Any node's role row counts, since its
  * target_node and not its writer says where it answers. NULL @labels earns nothing. */
-static u32 acl_read_role_grants(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry, u32 bound,
+static u32 acl_read_role_grants(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry, u32 taken,
 				const struct acl_role_key *labels)
 {
 	if (!labels)
 		return 0;
-	if (bound > ACL_DELEG_MAX_ENTRIES)
-		bound = ACL_DELEG_MAX_ENTRIES;
 
 	u32 granted = 0;
-	for (u32 idx = 0; idx < bound; idx++) {
-		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, idx);
-		if (!deleg_entry)
-			continue;
-
+	acl_for_each_taken_row(sbi, rat_entry, taken, TEST_DELEG_SCAN_ROLE, pos) {
 		union acl_deleg_role_copy row;
-		cxl_get_acl_deleg_role(&row, &deleg_entry->role);
+		cxl_decode_acl_deleg_role(&row, &pos.line);
 		if (row.local.state != ACL_DELEG_ACTIVE || row.local.kind != ACL_DELEG_KIND_ROLE)
 			continue;
 		if (row.local.target_node != 0 && row.local.target_node != sbi->node_id)
@@ -540,7 +527,7 @@ s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_
 	 * waiting for one. */
 	union layout_rat_acl_copy acl;
 	cxl_get_layout_rat_acl(&acl, &rat_entry->acl);
-	u32 earned = policy_perms | acl_read_role_grants(sbi, rat_entry, acl.local.deleg_bound, labels);
+	u32 earned = policy_perms | acl_read_role_grants(sbi, rat_entry, acl.local.deleg_taken, labels);
 	if ((earned & required_perms) != required_perms)
 		return -EACCES;
 
@@ -551,8 +538,8 @@ s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_
 	if (caller.exe_inode_ino == 0)
 		return -ESRCH;
 
-	/* Two concurrent grants would settle on the same free slot, and raising the bound
-	 * afterwards reads and writes a line three other writers share. */
+	/* Two concurrent grants would settle on the same free slot, and marking a fresh row reads
+	 * and writes a line three other writers share. */
 	struct meta_lock lock;
 	s32 ret = meta_lock(sbi, &lock, TEST_META_OP_MAP);
 	if (ret)
@@ -567,10 +554,10 @@ s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_
 		goto unlock;
 	}
 
-	/* Read once for the scan bound below and for the bound raise at the end. The role rows are
-	 * read again too, since one can be revoked while the caller waits for the turn. */
+	/* Read once for the rows the scan below reads and for the mark a fresh row takes. The role rows
+	 * are read again too, since one can be revoked while the caller waits for the turn. */
 	cxl_get_layout_rat_acl(&acl, &rat_entry->acl);
-	earned = policy_perms | acl_read_role_grants(sbi, rat_entry, acl.local.deleg_bound, labels);
+	earned = policy_perms | acl_read_role_grants(sbi, rat_entry, acl.local.deleg_taken, labels);
 	if ((earned & required_perms) != required_perms) {
 		ret = -EACCES;
 		goto unlock;
@@ -578,8 +565,8 @@ s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_
 
 	const struct acl_deleg_target want = { .process = &caller };
 	struct cxl_cacheline line;
-	union acl_deleg_entry *deleg_entry = acl_find_deleg_slot(rat_entry, sbi->node_id,
-								 acl.local.deleg_bound, &want, &line);
+	union acl_deleg_entry *deleg_entry =
+		acl_find_deleg_slot(sbi, rat_entry, acl.local.deleg_taken, &want, &line);
 	if (!deleg_entry) {
 		ret = -ENOSPC;
 		goto unlock;
@@ -616,13 +603,14 @@ s32 acl_grant_deleg_caller(struct fs_sb_info *sbi, u32 rat_entry_id, u32 policy_
 	copy.local.uid = caller.uid;
 	copy.local.gid = caller.gid;
 
+	acl_mark_taken_row(rat_entry, &acl, deleg_entry);
+	if (test_crash_here(sbi, TEST_CRASH_GRANT_BEFORE_ROW)) {
+		ret = -EIO;
+		goto unlock;
+	}
+
 	/* One 64-byte transaction, so a reader sees the slot as it was or the finished row. */
 	cxl_set_acl_deleg_process(&deleg_entry->process, &copy);
-
-	/* Only a fresh row moves the bound: every writer raises it before releasing the lock, so an
-	 * ACTIVE row is already under it. */
-	if (!widens_own_row)
-		acl_raise_deleg_bound(rat_entry, &acl, deleg_entry);
 	ret = 0;
 
 unlock:
@@ -630,8 +618,51 @@ unlock:
 	return ret;
 }
 
-/* The bound stays where it is: lowering it would hide a row a peer wrote above this one, and the
- * hole left below costs a scan nothing. */
+/* What a revoke for @want takes: the row naming that holder and, for an account, every process row
+ * the helper wrote for its processes, since leaving those behind would be half a revoke. */
+static bool acl_match_revoked_row(const struct cxl_cacheline *line, u32 node_id, const struct acl_deleg_target *want)
+{
+	if (acl_match_deleg_target(line, node_id, want))
+		return true;
+	if (want->role || want->process)
+		return false;
+
+	union acl_deleg_process_copy row;
+	cxl_decode_acl_deleg_process(&row, line);
+	return acl_match_deleg_process_account(&row.local, node_id, want->uid, want->gid);
+}
+
+/* Empties every row a revoke for @want takes, then their taken bits, under the turn the caller holds.
+ * -ENOENT when none matched. */
+static s32 acl_drop_revoked_rows(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry,
+				 const struct acl_deleg_target *want)
+{
+	/* Read under the turn, since the emptied rows come off this copy's mask and it goes back. */
+	union layout_rat_acl_copy acl;
+	cxl_get_layout_rat_acl(&acl, &rat_entry->acl);
+
+	u32 emptied = 0;
+	acl_for_each_taken_row(sbi, rat_entry, acl.local.deleg_taken, TEST_DELEG_SCAN_REVOKE, pos) {
+		if (!acl_match_revoked_row(&pos.line, sbi->node_id, want))
+			continue;
+
+		/* Only the head changes, and every kind's head sits where the process view reads it. */
+		union acl_deleg_process_copy row;
+		cxl_decode_acl_deleg_process(&row, &pos.line);
+		row.local.state = ACL_DELEG_EMPTY;
+		cxl_set_acl_deleg_process(&pos.row->process, &row);
+		emptied |= 1U << pos.idx;
+	}
+
+	if (!emptied)
+		return -ENOENT;
+	if (test_crash_here(sbi, TEST_CRASH_REVOKE_BEFORE_UNMARK))
+		return -EIO;
+
+	acl_clear_taken_rows(rat_entry, &acl, emptied);
+	return 0;
+}
+
 s32 acl_revoke_deleg_account(struct fs_sb_info *sbi, u32 rat_entry_id, u32 uid, u32 gid)
 {
 	if (!sbi)
@@ -687,32 +718,8 @@ s32 acl_revoke_deleg_account(struct fs_sb_info *sbi, u32 rat_entry_id, u32 uid, 
 		}
 	}
 
-	ret = -ENOENT;
-
 	const struct acl_deleg_target want = { .uid = uid, .gid = gid };
-
-	/* To the table's end and not to deleg_bound: the row write and the bound raise are two
-	 * transactions, so a node that died between them left an ACTIVE row above the bound. */
-	for (u32 idx = 0; idx < ACL_DELEG_MAX_ENTRIES; idx++) {
-		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, idx);
-		if (!deleg_entry)
-			continue;
-
-		/* Both shapes, and the scan runs on: one account holds its account row and a process
-		 * row per process it got an upcall for, and leaving some behind is half a revoke. */
-		struct cxl_cacheline line;
-		cxl_get_cacheline(&line, deleg_entry);
-		union acl_deleg_process_copy row;
-		cxl_decode_acl_deleg_process(&row, &line);
-		if (!acl_match_deleg_target(&line, sbi->node_id, &want) &&
-		    !acl_match_deleg_process_account(&row.local, sbi->node_id, uid, gid))
-			continue;
-
-		/* Only the head changes, and the rest of the line goes back as it was read. */
-		row.local.state = ACL_DELEG_EMPTY;
-		cxl_set_acl_deleg_process(&deleg_entry->process, &row);
-		ret = 0;
-	}
+	ret = acl_drop_revoked_rows(sbi, rat_entry, &want);
 
 unlock:
 	meta_unlock(sbi, &lock);
@@ -748,8 +755,7 @@ static s32 acl_write_deleg_named(struct fs_sb_info *sbi, struct layout_rat_entry
 		return -EINVAL;
 
 	struct cxl_cacheline line;
-	union acl_deleg_entry *target = acl_find_deleg_slot(rat_entry, sbi->node_id,
-							    acl->local.deleg_bound, want, &line);
+	union acl_deleg_entry *target = acl_find_deleg_slot(sbi, rat_entry, acl->local.deleg_taken, want, &line);
 	if (!target)
 		return -ENOSPC;
 
@@ -761,6 +767,10 @@ static s32 acl_write_deleg_named(struct fs_sb_info *sbi, struct layout_rat_entry
 	    found.local.state == ACL_DELEG_ACTIVE &&
 	    (found.local.perms & ~perms))
 		return -EPERM;
+
+	acl_mark_taken_row(rat_entry, acl, target);
+	if (test_crash_here(sbi, TEST_CRASH_GRANT_BEFORE_ROW))
+		return -EIO;
 
 	if (want->role) {
 		union acl_deleg_role_copy copy;
@@ -778,14 +788,12 @@ static s32 acl_write_deleg_named(struct fs_sb_info *sbi, struct layout_rat_entry
 		acl_set_account_row(sbi, target, want->uid, want->gid, perms);
 	}
 
-	acl_raise_deleg_bound(rat_entry, acl, target);
-
 	return 0;
 }
 
 /*
  * Both lines are read once inside the lock and serve the state check, the permission decision, the
- * scan bound and the bound raise. Reading them before it would put a stale bound back.
+ * rows a scan reads and the mark a new row takes. Reading them before it would put a stale mask back.
  */
 static s32 acl_enter_deleg_write(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry,
 				 u32 candidate, u32 *out_granted, union layout_rat_acl_copy *out_acl)
@@ -828,7 +836,7 @@ s32 acl_set_lock_region_account(struct fs_sb_info *sbi, struct layout_rat_entry 
 	if (hot.local.state != LAYOUT_RAT_ENTRY_ALLOCATED)
 		return -EACCES;
 
-	/* The bound already covers this slot, so nothing here touches the acl line every node shares. */
+	/* Format marked every node's slot, so nothing here touches the acl line every node shares. */
 	acl_set_account_row(sbi, row, uid, gid, perms);
 
 	return 0;
@@ -931,27 +939,8 @@ s32 acl_revoke_deleg_role(struct fs_sb_info *sbi, u32 rat_entry_id, const struct
 	if (ret)
 		goto unlock;
 
-	ret = -ENOENT;
-
 	const struct acl_deleg_target want = { .role = key };
-
-	/* To the table's end, for the reason the account revoke gives. */
-	for (u32 idx = 0; idx < ACL_DELEG_MAX_ENTRIES; idx++) {
-		union acl_deleg_entry *deleg_entry = layout_get_deleg_entry(rat_entry, idx);
-		if (!deleg_entry)
-			continue;
-
-		struct cxl_cacheline line;
-		cxl_get_cacheline(&line, deleg_entry);
-		if (!acl_match_deleg_target(&line, sbi->node_id, &want))
-			continue;
-
-		union acl_deleg_role_copy copy;
-		cxl_decode_acl_deleg_role(&copy, &line);
-		copy.local.state = ACL_DELEG_EMPTY;
-		cxl_set_acl_deleg_role(&deleg_entry->role, &copy);
-		ret = 0;
-	}
+	ret = acl_drop_revoked_rows(sbi, rat_entry, &want);
 
 unlock:
 	meta_unlock(sbi, &lock);
@@ -985,7 +974,7 @@ s32 acl_set_default_perms(struct fs_sb_info *sbi, u32 rat_entry_id, u32 perms)
 	if (ret)
 		return ret;
 
-	/* deleg_bound and the owner fields share this line, so the read and the write below must not
+	/* deleg_taken and the owner fields share this line, so the read and the write below must not
 	 * have another writer's put-back between them. */
 	struct meta_lock lock;
 	ret = meta_lock(sbi, &lock, TEST_META_OP_PERM);

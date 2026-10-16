@@ -10,6 +10,7 @@
 #include "layout/layout_access.h"
 #include "layout/refs.h"
 #include "region/refs.h"
+#include "util/bitmap.h"
 
 static struct layout_refs_line *region_get_refs_line(struct fs_sb_info *sbi, u32 node_id)
 {
@@ -45,7 +46,7 @@ static void region_publish_refs(struct fs_sb_info *sbi)
 	memset(&line.local, 0, sizeof(line.local));
 	for (u32 entry = 0; entry < LAYOUT_MAX_RAT_ENTRIES; entry++) {
 		if (atomic_read(&sbi->refs_local[entry]) > 0)
-			line.local.held[entry / LAYOUT_REFS_WORD_BITS] |= 1ULL << (entry % LAYOUT_REFS_WORD_BITS);
+			bits_set(line.local.held, entry);
 	}
 	cxl_set_layout_refs_line(region_get_refs_line(sbi, sbi->node_id), &line);
 
@@ -81,11 +82,10 @@ bool region_has_refs(struct fs_sb_info *sbi, u32 rat_entry_id)
 	if (rat_entry_id >= LAYOUT_MAX_RAT_ENTRIES)
 		return false;
 
-	const u64 mask = 1ULL << (rat_entry_id % LAYOUT_REFS_WORD_BITS);
 	for (u32 node = 1; node <= FS_MAX_NODE_ID; node++) {
 		union layout_refs_line_copy line;
 		cxl_get_layout_refs_line(&line, region_get_refs_line(sbi, node));
-		if (line.local.held[rat_entry_id / LAYOUT_REFS_WORD_BITS] & mask)
+		if (bits_has(line.local.held, rat_entry_id))
 			return true;
 	}
 	return false;

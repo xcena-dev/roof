@@ -211,10 +211,12 @@ runBlankSummary()
     unit="$(unitNameFor "$DEAD_MOUNT")"
 
     printf '1' >"${PARAM_DIR}/region_inject_blank_summary"
-    systemctl stop "${DAEMON_NAME}@${DEAD_NODE}.service"
+    # The umount helper stops the daemon itself, once the clean step has taken its turn.
     timeout 60 systemctl stop "$unit" || { fail "blank: the mount did not come down"; return; }
     systemctl reset-failed "${DAEMON_NAME}@${DEAD_NODE}.service" 2>/dev/null
     systemctl start "$unit" || { fail "blank: the mount did not come back"; return; }
+    # A clean unmount frees the slot, so the mount takes the lowest free one and maybe another id.
+    DEAD_NODE="$(nodeOfMount "$DEAD_MOUNT")"
     systemctl start "${DAEMON_NAME}@${DEAD_NODE}.service"
     sleep 2
 
@@ -252,7 +254,9 @@ reviveDeadNode()
     # own start of the unit would then fail on it.
     systemctl reset-failed "${DAEMON_NAME}@${DEAD_NODE}.service" 2>/dev/null
     systemctl start "$unit" || { fail "the dead mount did not come back"; return 1; }
-    printf '%s 0' "$DEAD_NODE" >"${SYSFS}/test/freeze_heartbeat"
+    # The survivor holds the old id until no row names it, so the mount can come back under another.
+    DEAD_NODE="$(nodeOfMount "$DEAD_MOUNT")"
+    [ -n "$DEAD_NODE" ] || { fail "the dead mount came back with no node id"; return 1; }
     systemctl start "${DAEMON_NAME}@${DEAD_NODE}.service" || { fail "the dead node's daemon did not start"; return 1; }
     sleep 2
     mountpoint -q "$DEAD_MOUNT"

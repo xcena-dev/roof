@@ -123,6 +123,8 @@ void meta_unlock(struct fs_sb_info *sbi, const struct meta_lock *taken)
 	if (READ_ONCE(sbi->test_dead))
 		return;
 
+	test_hold_meta_turn(taken->op);
+
 	/* Read before the release, so what lands in WORK is the caller's own and not the upcall
 	 * this function is about to make. */
 	const u64 before_unlock_ns = ktime_get_ns();

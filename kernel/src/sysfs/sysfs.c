@@ -21,6 +21,7 @@
 #include "sysfs/sysfs_gc.h"
 #include "sysfs/sysfs_internal.h"
 #include "sysfs/sysfs_region.h"
+#include "sysfs/sysfs_unmount.h"
 #include "test/test_sysfs.h"
 
 static struct kobject *sysfs_kobj;
@@ -57,13 +58,13 @@ static s32 sysfs_create_mount_dir(struct fs_sb_info *sbi)
 	if (ret)
 		goto err_put;
 
-	ret = gc_create_mount_attrs(&mount->kobj);
+	ret = unmount_create_mount_attrs(&mount->kobj);
 	if (ret)
 		goto err_put;
 
 	ret = daemon_create_mount_attrs(&mount->kobj);
 	if (ret)
-		goto err_gc;
+		goto err_unmount;
 
 	ret = test_create_mount_attrs(&mount->kobj);
 	if (ret)
@@ -74,8 +75,8 @@ static s32 sysfs_create_mount_dir(struct fs_sb_info *sbi)
 
 err_daemon:
 	daemon_delete_mount_attrs(&mount->kobj);
-err_gc:
-	gc_delete_mount_attrs(&mount->kobj);
+err_unmount:
+	unmount_delete_mount_attrs(&mount->kobj);
 err_put:
 	kobject_put(&mount->kobj);
 	return ret;
@@ -92,7 +93,7 @@ static void sysfs_delete_mount_dir(struct fs_sb_info *sbi)
 	sbi->sysfs_mount = NULL;
 	test_delete_mount_attrs(&mount->kobj);
 	daemon_delete_mount_attrs(&mount->kobj);
-	gc_delete_mount_attrs(&mount->kobj);
+	unmount_delete_mount_attrs(&mount->kobj);
 	kobject_del(&mount->kobj);
 	kobject_put(&mount->kobj);
 }

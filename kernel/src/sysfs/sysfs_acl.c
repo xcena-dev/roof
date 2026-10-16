@@ -36,7 +36,7 @@ static ssize_t perm_info_show(struct kobject *kobj, struct kobj_attribute *attr,
 			break;
 		}
 
-		len += sysfs_emit_at(buf, len, "RAT_Entry\tDefault\tDeleg_bound\n");
+		len += sysfs_emit_at(buf, len, "RAT_Entry\tDefault\tDeleg_taken\n");
 
 		for (u32 i = 0; i < LAYOUT_MAX_RAT_ENTRIES; i++) {
 			struct layout_rat_entry *entry = layout_get_rat_entry(sbi, i);
@@ -50,8 +50,8 @@ static ssize_t perm_info_show(struct kobject *kobj, struct kobj_attribute *attr,
 
 			union layout_rat_acl_copy acl;
 			cxl_get_layout_rat_acl(&acl, &entry->acl);
-			len += sysfs_emit_at(buf, len, "%u\t0x%04x\t%u\n", i,
-					     acl.local.default_perms, acl.local.deleg_bound);
+			len += sysfs_emit_at(buf, len, "%u\t0x%04x\t0x%08x\n", i,
+					     acl.local.default_perms, acl.local.deleg_taken);
 		}
 	} while (false);
 

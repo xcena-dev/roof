@@ -396,6 +396,7 @@ enum bootstrap_recovery_step bootstrap_next_recovery(struct fs_sb_info *sbi, u32
 		return BOOTSTRAP_RECOVERY_NONE;
 
 	u64 now = ktime_get_real_ns();
+	u32 clean_id = 0;
 
 	for (s32 idx = 0; idx < LAYOUT_BOOTSTRAP_MAX_SLOTS; idx++) {
 		if (idx == READ_ONCE(sbi->bootstrap_slot_idx))
@@ -414,13 +415,22 @@ enum bootstrap_recovery_step bootstrap_next_recovery(struct fs_sb_info *sbi, u32
 
 		/* Only a stake in this node's own name says the rows are this node's to clear. Picking
 		 * up an abandoned one therefore goes through the stake again, and one cleaner stays one. */
-		*node_id = (u32)(idx + 1);
 		bool mine = seen.local.state == LAYOUT_BOOTSTRAP_STATE_RECOVERING &&
 			    seen.local.recoverer == sbi->node_id;
-		return mine ? BOOTSTRAP_RECOVERY_CLEAN : BOOTSTRAP_RECOVERY_STAKE;
+		if (!mine) {
+			*node_id = (u32)(idx + 1);
+			return BOOTSTRAP_RECOVERY_STAKE;
+		}
+		/* A stake takes no turn, so every one goes first: a clean that keeps failing then leaves no
+		 * later casualty unstaked, and so unfenced. */
+		if (clean_id == 0)
+			clean_id = (u32)(idx + 1);
 	}
 
-	return BOOTSTRAP_RECOVERY_NONE;
+	if (clean_id == 0)
+		return BOOTSTRAP_RECOVERY_NONE;
+	*node_id = clean_id;
+	return BOOTSTRAP_RECOVERY_CLEAN;
 }
 
 /*
@@ -667,6 +677,7 @@ s32 bootstrap_auto_mount(struct fs_sb_info *sbi)
 		pr_info("bootstrap: node_id=%u (slot %d)\n", sbi->node_id, slot_idx);
 		/* Nothing is open yet, so whatever a previous holder of this id left set is stale. */
 		region_clear_node_refs(sbi, sbi->node_id);
+		test_reset_node_faults(sbi->node_id);
 
 		/* Slot[0] on a device already formatted needs nothing more: the claim published it. */
 		if (slot_idx == 0 && format_is_needed(sbi)) {
@@ -713,6 +724,8 @@ s32 bootstrap_manual_mount(struct fs_sb_info *sbi, u32 node_id, bool want_format
 	}
 	if (ret)
 		pr_warn("bootstrap: explicit claim for node_id=%u: %d\n", node_id, ret);
+	else
+		test_reset_node_faults(node_id);
 
 	return 0;
 }

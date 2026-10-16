@@ -135,6 +135,23 @@ void test_delay_before_drain_refusal(void)
 		msleep(delay_ms);
 }
 
+/* One shot: the next create holds its metadata turn this long before it lets go, so a prepare finds
+ * a live writer it has to wait out. The knob reads 0 again once a create has taken it. */
+static u32 meta_inject_create_hold_ms;
+module_param(meta_inject_create_hold_ms, uint, 0600);
+MODULE_PARM_DESC(meta_inject_create_hold_ms,
+		 "TEST: the next create holds its metadata turn this many ms before releasing it");
+
+void test_hold_meta_turn(enum test_meta_op op)
+{
+	if (op != TEST_META_OP_CREATE)
+		return;
+
+	u32 hold_ms = xchg(&meta_inject_create_hold_ms, 0);
+	if (hold_ms)
+		msleep_interruptible(hold_ms);
+}
+
 /*
  * A frozen node stops stamping its slot, so peers see a stalled heartbeat and take the
  * crashed-owner path. Kept by node_id and not per-mount, so a host running several mounts can
@@ -221,6 +238,14 @@ void test_set_stamp_offset(u32 node_id, s64 offset_ns)
 	WRITE_ONCE(stamp_offset_ns[node_id], offset_ns);
 }
 
+/* A freeze or an offset a test set on the id's previous holder goes once a new mount claims the id.
+ * Both knobs reach only a mounted id, so neither can have been set for the mount now starting. */
+void test_reset_node_faults(u32 node_id)
+{
+	test_set_tick_frozen(node_id, false);
+	test_set_stamp_offset(node_id, 0);
+}
+
 s64 test_get_stamp_offset(u32 node_id)
 {
 	if (node_id > FS_MAX_NODE_ID)
@@ -268,6 +293,25 @@ void test_get_meta_turns(u32 node_id, struct test_meta_turns *out)
 		return;
 	for (u32 kind = 0; kind < TEST_META_TURN_KINDS; kind++)
 		out->counts[kind] = (u64)atomic64_read(&meta_turns[node_id][kind]);
+}
+
+/* By node_id and atomic for the reasons meta_turns gives. */
+static atomic64_t deleg_reads[FS_MAX_NODE_ID + 1][TEST_DELEG_SCAN_KINDS];
+
+void test_count_deleg_read(u32 node_id, enum test_deleg_scan scan)
+{
+	if (node_id > FS_MAX_NODE_ID || scan >= TEST_DELEG_SCAN_KINDS)
+		return;
+	atomic64_inc(&deleg_reads[node_id][scan]);
+}
+
+void test_get_deleg_reads(u32 node_id, struct test_deleg_reads *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (node_id > FS_MAX_NODE_ID)
+		return;
+	for (u32 scan = 0; scan < TEST_DELEG_SCAN_KINDS; scan++)
+		out->counts[scan] = (u64)atomic64_read(&deleg_reads[node_id][scan]);
 }
 
 /* ── What one round trip to a helper spends, segment by segment ── */

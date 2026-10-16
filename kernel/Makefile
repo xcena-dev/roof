@@ -22,11 +22,12 @@ $(MODULE_NAME)-objs :=                                                   \
 	src/vfs/namei.o                                                      \
 	src/region/region.o src/region/index.o src/region/refs.o             \
 	src/lifecycle/bootstrap.o src/lifecycle/gc.o src/lifecycle/format.o  \
+	src/lifecycle/unmount.o                                              \
 	src/cxl/io.o src/cxl/dax_area.o                                      \
 	src/access/acl.o src/access/daemon_dev.o 							 \
 	src/access/daemon_queue.o src/access/meta_lock.o     				 \
 	src/sysfs/sysfs.o src/sysfs/sysfs_region.o src/sysfs/sysfs_acl.o     \
-	src/sysfs/sysfs_gc.o src/sysfs/sysfs_daemon.o
+	src/sysfs/sysfs_gc.o src/sysfs/sysfs_daemon.o src/sysfs/sysfs_unmount.o
 
 # The knobs only a test turns. A production build passes FS_TEST_KNOBS=0 and test/ is neither
 # compiled nor reachable, every hook folding to the value production already used.

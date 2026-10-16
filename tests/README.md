@@ -41,6 +41,7 @@ Every case is a binary over `libroof`, takes its mount points on the command lin
 | `test_perm_grants` | onenode | Which grants the kernel writes down on a node's own file. |
 | `test_perm_peer` | multinode | What a node that owns nothing may do, one rung at a time. |
 | `test_perm_revoke` | multinode | Who may take a row off: the caller it names, or ADMIN, and only the node that wrote it. |
+| `test_deleg_scan` | onenode | A grant, a revoke and a permission check read only the rows the region marks taken, never the holes a revoke left. |
 | `test_cross_process` | multinode | One file's life watched from another process through the other mount. |
 | `test_fork_inherit` | onenode | A descriptor survives `fork` and its permission does not. |
 | `test_pid_reuse` | multinode | A reused pid inherits nothing from the row that named it. Skips without `cap_sys_admin`. |
@@ -109,7 +110,15 @@ Its mounts come up without a daemon, so the script turns on the test knob that s
 `chaos_mapper` holds regions with a live process on the far side of a revoke.
 `rat_summary_crash.sh` makes one node die between two lines of a create, a placement or an unlink, kills its daemon, and checks that the survivor's sweep puts the RAT summary line back in step with the entries and keeps writing.
 It also mounts a node onto a zeroed summary line and checks that the node searches the entries until a sweep repairs the line.
+`deleg_bitmap_crash.sh` makes one node die after it marks a delegation row's taken bit and before it writes the row, and again after it empties a row and before it clears the bit.
+It drives an account grant, a process row earned by a read map, an account revoke, a role revoke, and one revoke that empties two rows at once.
+It checks that the survivor's scans read each stale row once, that a sweep leaves it alone, that each next grant reuses the lowest stale slot with the mask unchanged, and that no ACTIVE row ever stands under a clear bit.
+It also checks that the lock region keeps every node slot marked through the survivor's recovery and the remount, and that the remounted node takes a metadata turn.
 `rat_place_race.sh` places regions from both nodes at once and checks that no two extents overlap.
+`unmount_held_turn.sh` makes one create hold its metadata turn past the wait of the unmount clean step.
+It checks that the clean step gives up with EAGAIN and that the node takes a create again afterwards.
+It also kills one node in the middle of a placement and unmounts it before the survivor stakes its slot.
+It checks that the mount comes down and that no task is left in uninterruptible sleep.
 
 | Case | Claim |
 |---|---|

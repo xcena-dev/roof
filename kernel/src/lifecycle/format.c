@@ -12,6 +12,7 @@
 #include "layout/layout_access.h"
 #include "lifecycle/format.h"
 #include "test/test_hooks.h"
+#include "util/bitmap.h"
 
 /*
  * format_write_lock_entry - RAT entry 0, the lock region, written without the index.
@@ -45,8 +46,8 @@ static void format_write_lock_entry(struct fs_sb_info *sbi)
 	hot.local.mode = 0666;
 	hot.local.state = LAYOUT_RAT_ENTRY_ALLOCATED;
 	acl.local.default_perms = FS_PERM_READ | FS_PERM_WRITE;
-	/* One slot per node, keyed by node_id, so the bound is the ceiling and never moves. */
-	acl.local.deleg_bound = FS_MAX_NODE_ID;
+	/* One slot per node, keyed by node_id, so every slot is marked from the start and stays marked. */
+	acl.local.deleg_taken = ACL_DELEG_NODE_ROWS;
 
 	cxl_set_layout_rat_acl(&entry->acl, &acl);
 	cxl_set_layout_rat_hot(&entry->hot, &hot);
@@ -141,7 +142,7 @@ s32 format_device(struct fs_sb_info *sbi)
 
 	/* The lock region is the one entry a format leaves taken. */
 	union layout_rat_map_copy rat_map = {};
-	layout_rat_map_mark(&rat_map, FS_LOCK_REGION_RAT_ID, true);
+	bits_set(rat_map.local.taken, FS_LOCK_REGION_RAT_ID);
 	cxl_set_layout_rat_map(&rat->map, &rat_map);
 
 	/* Read back through the mapping, which is the only thing that catches an unflushed write. */

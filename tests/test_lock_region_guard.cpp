@@ -96,7 +96,7 @@ void checkGrantRevoke(fsuser::tests::Report& report, fsuser::tests::Mount& mount
 }
 
 // The Default column of the perm_info row for @ratEntry, or nullopt when the file or the row is
-// not there. The rows read "<entry>\t0x<default>\t<bound>".
+// not there. The rows read "<entry>\t0x<default>\t0x<taken>".
 [[nodiscard]] std::optional<std::uint32_t> readRegionDefault(std::uint32_t ratEntry)
 {
     std::ifstream source{fsuser::tests::PermInfoPath};

@@ -22,6 +22,7 @@
 #include "layout/layout_access.h"
 #include "region/region.h"
 #include "test/test_hooks.h"
+#include "util/bitmap.h"
 
 /* ============================================================================
  * RAT (Region Allocation Table) management
@@ -96,7 +97,7 @@ static void region_write_map_stepped(struct fs_sb_info *sbi, const union layout_
 	union layout_rat_map_copy stepped = *map;
 	stepped.local.placements = placements;
 	if (freed < LAYOUT_MAX_RAT_ENTRIES)
-		layout_rat_map_mark(&stepped, freed, false);
+		bits_clear(stepped.local.taken, freed);
 	region_write_map(sbi, &stepped);
 }
 
@@ -146,9 +147,9 @@ static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const uni
 
 	/* Every entry while the summary is not trusted, since a taken bit a device formatted
 	 * before the summary existed never had set would hide a standing extent. */
-	const bool by_bits = sbi->rat_map_trusted;
-	for (u32 idx = by_bits ? layout_rat_map_next(map, 0, true) : 0; idx < LAYOUT_MAX_RAT_ENTRIES;
-	     idx = by_bits ? layout_rat_map_next(map, idx + 1, true) : idx + 1) {
+	static const u64 every_entry[LAYOUT_RAT_MAP_WORDS] = { [0 ... LAYOUT_RAT_MAP_WORDS - 1] = ~0ULL };
+	const u64 *taken = sbi->rat_map_trusted ? map->local.taken : every_entry;
+	bits_for_each_set(idx, taken, LAYOUT_MAX_RAT_ENTRIES) {
 		struct layout_rat_entry *entry = layout_get_rat_entry(sbi, idx);
 		if (!entry)
 			return -EIO;
@@ -219,7 +220,7 @@ static s32 region_read_taken_bits(struct fs_sb_info *sbi, union layout_rat_map_c
 		union layout_rat_hot_copy hot;
 		cxl_get_layout_rat_hot(&hot, &entry->hot);
 		if (hot.local.state != LAYOUT_RAT_ENTRY_FREE)
-			layout_rat_map_mark(seen, idx, true);
+			bits_set(seen->local.taken, idx);
 	}
 	return 0;
 }
@@ -363,7 +364,7 @@ u32 region_find_free_rat_entry(struct fs_sb_info *sbi)
 
 	union layout_rat_map_copy map;
 	region_read_map(sbi, &map);
-	return layout_rat_map_next(&map, 0, false);
+	return bits_find_next_clear(map.local.taken, LAYOUT_MAX_RAT_ENTRIES, 0);
 }
 
 /* Take slot @idx if it reads free. -EBUSY when it does not, which for a hint is a peer having
@@ -415,8 +416,8 @@ s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u
 	region_read_map(sbi, &map);
 
 	u32 idx = hint;
-	if (idx >= LAYOUT_MAX_RAT_ENTRIES || layout_rat_map_has(&map, idx))
-		idx = layout_rat_map_next(&map, 0, false);
+	if (idx >= LAYOUT_MAX_RAT_ENTRIES || bits_has(map.local.taken, idx))
+		idx = bits_find_next_clear(map.local.taken, LAYOUT_MAX_RAT_ENTRIES, 0);
 	while (idx < LAYOUT_MAX_RAT_ENTRIES) {
 		s32 ret = region_claim_rat_entry(sbi, idx, name, name_len, offset, size, mode, identity);
 		if (ret == 0)
@@ -425,8 +426,8 @@ s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u
 			return ret;
 		/* Taken with its bit clear is what a crash between the claim and the mark leaves, so
 		 * the bit is set on the way past. */
-		layout_rat_map_mark(&map, idx, true);
-		idx = layout_rat_map_next(&map, idx + 1, false);
+		bits_set(map.local.taken, idx);
+		idx = bits_find_next_clear(map.local.taken, LAYOUT_MAX_RAT_ENTRIES, idx + 1);
 	}
 
 	/* Every bit set: a slot a crash left marked while free is found by the entries themselves. */
@@ -447,7 +448,7 @@ s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u
 	if (test_crash_here(sbi, TEST_CRASH_ALLOC_BEFORE_MARK))
 		return -EIO;
 
-	layout_rat_map_mark(&map, idx, true);
+	bits_set(map.local.taken, idx);
 	region_write_map(sbi, &map);
 	*out_rat_entry_id = idx;
 	return 0;

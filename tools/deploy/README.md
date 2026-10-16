@@ -35,8 +35,14 @@ the daemon through its own installer, the mount units, and the mounts started.
 | `--mount PATH[=DEV]` | a mount point, on `DEV` or on `--device`; repeat for more (default: one under `/mnt`, named after the filesystem) |
 | `--no-start` | write everything but leave the mounts down |
 | `--reset-cfg` | replace the config and the policy with this tree's examples |
-| `--skip-build` | install what is already built |
+| `--skip-build` | install what is already built, building only a part that is not there |
+| `--tools-build DIR` | where the helpers are built (default: a directory under `/tmp`) |
+| `--lib-build DIR` | where the library is built (default: a directory under `/tmp`) |
 | `--prefix PATH` | where the library and its headers go (default: `/usr/local`) |
+
+`--skip-build` still builds a part whose build is missing, 
+since the build directories sit under `/tmp` by default 
+and a reboot empties them.
 
 `--account`, `--device` and `--mount` shape the config a first run plants.
 Once the config is there, 
@@ -57,9 +63,13 @@ so a drop-in beside it names every mount point of the host as writable.
 sudo tools/deploy/reload.sh
 ```
 
-Stops the daemons and the mounts, 
-rebuilds and reinstalls the module and the helpers, 
+Rebuilds the module and the helpers, 
+stops the daemons and the mounts, 
+reinstalls what it built, 
 and brings the mounts back.
+The build comes first, 
+so a build that fails leaves the host up.
+`--skip-build` and `--tools-build DIR` mean what they mean for `install.sh`.
 
 ## Uninstall
 

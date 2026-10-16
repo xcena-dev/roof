@@ -15,6 +15,7 @@
 #include "cxl/io.h"
 #include "layout/rat.h" /* LAYOUT_MAX_RAT_ENTRIES */
 #include "uapi.h" /* FS_MAX_NODE_ID */
+#include "util/bitmap.h" /* BITS_WORD_WIDTH */
 
 enum layout_refs_config {
 	LAYOUT_REFS_WORD_BITS = 64,
@@ -26,6 +27,7 @@ enum layout_refs_config {
 
 _Static_assert(LAYOUT_MAX_RAT_ENTRIES % LAYOUT_REFS_WORD_BITS == 0,
 	       "a node's line covers the entries in whole words");
+_Static_assert((u32)LAYOUT_REFS_WORD_BITS == (u32)BITS_WORD_WIDTH, "a node's words are the bitmap util's");
 _Static_assert(LAYOUT_REFS_WORDS * sizeof(u64) <= CXL_LINE_BYTES, "a node's bits must fit one line");
 
 #define LAYOUT_REFS_FIELDS(FIELD, ARRAY, BYTES) \

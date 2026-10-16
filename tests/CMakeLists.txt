@@ -80,6 +80,12 @@ fs_add_case(test_cloexec_required onenode)
 fs_add_case(test_contract onenode)
 fs_add_case(test_cross_process multinode)
 fs_add_case(test_dead_owner_unlink multinode)
+
+# Counts the delegation rows this node's scans read, so a case running beside it adds reads this
+# one takes as its own.
+fs_add_case(test_deleg_scan onenode)
+set_tests_properties(test_deleg_scan PROPERTIES RUN_SERIAL ON)
+
 fs_add_case(test_dupname multinode)
 fs_add_case(test_exec_generation multinode)
 fs_add_case(test_fork_inherit onenode)
@@ -227,6 +233,16 @@ set_tests_properties(bootstrap_chaos PROPERTIES LABELS lifecycle SKIP_RETURN_COD
 # root and a module with CONFIG_FS_TEST_KNOBS.
 add_test(NAME rat_summary_crash COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/rat_summary_crash.sh)
 set_tests_properties(rat_summary_crash PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
+
+# Kills one node's daemon and remounts that node after each death, on the host's own mounts. Needs
+# root, a module with CONFIG_FS_TEST_KNOBS and chaos_mapper built.
+add_test(NAME deleg_bitmap_crash COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/deleg_bitmap_crash.sh)
+set_tests_properties(deleg_bitmap_crash PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
+
+# Holds one create's turn past an unmount's wait, then kills one node mid-placement and unmounts it at
+# once, on the host's own mounts. Needs root and a module with CONFIG_FS_TEST_KNOBS.
+add_test(NAME unmount_held_turn COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/unmount_held_turn.sh)
+set_tests_properties(unmount_held_turn PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
 
 # The decisions the deploy scripts record and read back, on scratch files. No root and no mount.
 add_test(NAME test_deploy_state COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_deploy_state.sh)

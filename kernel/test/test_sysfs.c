@@ -21,6 +21,7 @@
 #include "sysfs/sysfs_internal.h"
 #include "test/test_hooks.h"
 #include "test/test_sysfs.h"
+#include "util/bitmap.h"
 
 /*
  * Takes "<node_id> <0|1>" and makes that node's bootstrap tick a no-op, so peers see a stalled
@@ -194,6 +195,25 @@ static ssize_t meta_lock_show(struct kobject *kobj, struct kobj_attribute *attr,
 static struct kobj_attribute meta_lock_attr = __ATTR_RO(meta_lock);
 
 /*
+ * deleg_reads - read-only: how many delegation rows this mount's scans have read, by scan.
+ *
+ * A case takes the delta across one operation and compares it with the rows the region holds, which
+ * is how it tells a scan of the taken rows from a scan of the table.
+ */
+static ssize_t deleg_reads_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	struct test_deleg_reads reads;
+
+	test_get_deleg_reads(sysfs_sbi_of(kobj)->node_id, &reads);
+	return sysfs_emit(buf, "check=%llu role=%llu slot=%llu revoke=%llu sweep=%llu\n",
+			  reads.counts[TEST_DELEG_SCAN_CHECK], reads.counts[TEST_DELEG_SCAN_ROLE],
+			  reads.counts[TEST_DELEG_SCAN_SLOT], reads.counts[TEST_DELEG_SCAN_REVOKE],
+			  reads.counts[TEST_DELEG_SCAN_SWEEP]);
+}
+
+static struct kobj_attribute deleg_reads_attr = __ATTR_RO(deleg_reads);
+
+/*
  * meta_stages - read-only: where one metadata write on this mount spends its time.
  *
  * One row per operation and stage, carrying the count and the summed nanoseconds so a reader takes
@@ -260,7 +280,7 @@ static ssize_t rat_map_show(struct kobject *kobj, struct kobj_attribute *attr, c
 		union layout_rat_hot_copy hot;
 		cxl_get_layout_rat_hot(&hot, &rat->entries[idx].hot);
 		if (hot.local.state != LAYOUT_RAT_ENTRY_FREE)
-			layout_rat_map_mark(&seen, idx, true);
+			bits_set(seen.local.taken, idx);
 	}
 
 	s32 len = sysfs_emit(buf, "placements=%llu trusted=%u\n", map.local.placements, sbi->rat_map_trusted ? 1 : 0);
@@ -275,6 +295,7 @@ static struct kobj_attribute rat_map_attr = __ATTR_RO(rat_map);
 static struct attribute *test_mount_attrs[] = {
 	&bootstrap_dump_attr.attr,
 	&meta_lock_attr.attr,
+	&deleg_reads_attr.attr,
 	&meta_stages_attr.attr,
 	&rat_map_attr.attr,
 	NULL,

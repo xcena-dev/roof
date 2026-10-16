@@ -38,10 +38,11 @@ usage() {
 	cat <<EOF
 reload.sh -- rebuild and reload the module and helpers on a running host.
 
-  --mount PATH     a mount point to cycle; repeat for more (default: every mount that is up)
-  --skip-build     reload what is already built
-  --no-start       leave the mounts down
-  --help           this
+  --mount PATH        a mount point to cycle; repeat for more (default: every mount that is up)
+  --skip-build        reload what is already built, building the helpers only when none are there
+  --tools-build DIR   where the helpers are built (default: ${TOOLS_BUILD})
+  --no-start          leave the mounts down
+  --help              this
 
 Run install.sh once before this. It creates the accounts, the units and the configs; this only
 swaps what a build produces.
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	--skip-build) BUILD=false; shift ;;
+	--tools-build) TOOLS_BUILD="$2"; shift 2 ;;
 	--no-start) START=false; shift ;;
 	--help) usage; exit 0 ;;
 	*) echo "unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -81,6 +83,38 @@ fi
 asAccount() {
 	sudo -u "$ACCOUNT" "$@"
 }
+
+# ── build ───────────────────────────────────────────────────────────────
+# Before the down, so a build that fails leaves the host as it was. A skipped build still makes what
+# is missing, since the helpers build under /tmp by default and a reboot empties it.
+BUILD_MODULE=$BUILD
+BUILD_TOOLS=$BUILD
+[ -f "${ROOT}/kernel/build/${FS_NAME}.ko" ] || BUILD_MODULE=true
+for helper in "mount.${FS_NAME}" "umount.${FS_NAME}"; do
+	[ -x "${TOOLS_BUILD}/${helper}" ] || BUILD_TOOLS=true
+done
+
+if [ "$BUILD_MODULE" = true ] || [ "$BUILD_TOOLS" = true ]; then
+	echo "== build =="
+
+	# A build directory this account cannot write is what one earlier root build leaves behind.
+	# The module Makefile then copies into it without checking, so the failure reads as a stale
+	# module rather than as a permission one.
+	for dir in "${ROOT}/kernel/build" "$TOOLS_BUILD"; do
+		if [ -d "$dir" ] && [ "$(stat -c '%U' "$dir")" != "$ACCOUNT" ]; then
+			echo "reload.sh: ${dir} was $(stat -c '%U' "$dir")'s; giving it to ${ACCOUNT}"
+			chown -R "${ACCOUNT}" "$dir"
+		fi
+	done
+
+	if [ "$BUILD_MODULE" = true ]; then
+		asAccount make -C "${ROOT}/kernel" >/dev/null
+	fi
+	if [ "$BUILD_TOOLS" = true ]; then
+		asAccount cmake -S "${ROOT}/tools" -B "$TOOLS_BUILD" >/dev/null
+		asAccount cmake --build "$TOOLS_BUILD" >/dev/null
+	fi
+fi
 
 # ── down ────────────────────────────────────────────────────────────────
 # Stopping the mount unit runs umount(8), which reaches the mount helper. The helper cleans this
@@ -109,25 +143,6 @@ fi
 if [ -d "$MODULE_SYSFS" ]; then
 	echo "reload.sh: the module is still loaded, so the unit below would keep using it" >&2
 	exit 1
-fi
-
-# ── build ───────────────────────────────────────────────────────────────
-if [ "$BUILD" = true ]; then
-	echo "== build =="
-
-	# A build directory this account cannot write is what one earlier root build leaves behind.
-	# The module Makefile then copies into it without checking, so the failure reads as a stale
-	# module rather than as a permission one.
-	for dir in "${ROOT}/kernel/build" "$TOOLS_BUILD"; do
-		if [ -d "$dir" ] && [ "$(stat -c '%U' "$dir")" != "$ACCOUNT" ]; then
-			echo "reload.sh: ${dir} was $(stat -c '%U' "$dir")'s; giving it to ${ACCOUNT}"
-			chown -R "${ACCOUNT}" "$dir"
-		fi
-	done
-
-	asAccount make -C "${ROOT}/kernel" >/dev/null
-	asAccount cmake -S "${ROOT}/tools" -B "$TOOLS_BUILD" >/dev/null
-	asAccount cmake --build "$TOOLS_BUILD" >/dev/null
 fi
 
 # ── install ─────────────────────────────────────────────────────────────

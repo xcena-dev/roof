@@ -14,6 +14,7 @@
 #include "cxl/io.h" /* the whole-line views this row is defined through */
 #include "daemon_uapi.h" /* FS_DAEMON_IDENT_LEN */
 #include "uapi.h" /* FS_NAME_MAX, FS_DELEG_MAX */
+#include "util/bitmap.h" /* BITS_WORD_WIDTH, BITS_MASK_WIDTH */
 
 enum layout_region_type {
 	LAYOUT_REGION_DATA = 0,
@@ -62,7 +63,15 @@ enum acl_deleg_kind {
 
 enum {
 	ACL_DELEG_MAX_ENTRIES = FS_DELEG_MAX,
+	/* Every row the table has, so a mask read off the medium names none past its end. */
+	ACL_DELEG_ALL_ROWS = (1U << ACL_DELEG_MAX_ENTRIES) - 1,
+	/* The lock region's slot per node. Format marks them all, because a node writes its own at
+	 * bring-up with no turn to mark it under. */
+	ACL_DELEG_NODE_ROWS = (1U << FS_MAX_NODE_ID) - 1,
 };
+
+_Static_assert((u32)ACL_DELEG_MAX_ENTRIES < (u32)BITS_MASK_WIDTH, "deleg_taken holds one bit per row in one u32");
+_Static_assert((u32)FS_MAX_NODE_ID <= (u32)ACL_DELEG_MAX_ENTRIES, "the lock region holds a row per node");
 
 enum layout_rat_config {
 	LAYOUT_MAX_RAT_ENTRIES = 256,
@@ -80,6 +89,7 @@ enum layout_rat_config {
 
 _Static_assert(LAYOUT_MAX_RAT_ENTRIES % LAYOUT_RAT_MAP_WORD_BITS == 0,
 	       "the summary bitmap covers the entries in whole words");
+_Static_assert((u32)LAYOUT_RAT_MAP_WORD_BITS == (u32)BITS_WORD_WIDTH, "the summary words are the bitmap util's");
 _Static_assert(LAYOUT_RAT_MAP_WORDS * 8 + 8 <= CXL_LINE_BYTES,
 	       "the summary bitmap and the placement count must fit one line");
 
@@ -157,20 +167,19 @@ union acl_deleg_entry {
 CXL_DEFINE_LINE_VIEWS(layout_rat_hot, LAYOUT_RAT_HOT_FIELDS)
 
 /*
- * CL2 of a RAT entry: who owns the region, what a non-owner may do to it, and where a delegation
- * scan stops. An owner check reads most of these at once, which is why they share a line.
+ * CL2 of a RAT entry: who owns the region, what a non-owner may do to it, and which delegation rows
+ * a scan reads. An owner check reads most of these at once, which is why they share a line.
  */
-#define LAYOUT_RAT_ACL_FIELDS(FIELD, ARRAY, BYTES)                                            \
-	FIELD(16, default_perms) /* default non-owner perms (FS_PERM_*) */                    \
-	FIELD(16, owner_node_id) /* the node the owner runs on */                             \
-	FIELD(32, owner_pid)                                                                  \
-	FIELD(64, owner_birth_time) /* PID reuse protection */                                \
-	FIELD(64, owner_exe_inode_ino) /* owner exe inode # (post-exec retention defense) */  \
-	FIELD(32, owner_exe_inode_dev) /* owner exe binary fs dev */                          \
-	BYTES(FS_DAEMON_IDENT_LEN, owner_group)                                               \
-	BYTES(FS_DAEMON_IDENT_LEN, owner_role)                                                \
-	FIELD(16, deleg_bound) /* slots a delegation scan must cover: one past the highest */ \
-	BYTES(2, reserved2)
+#define LAYOUT_RAT_ACL_FIELDS(FIELD, ARRAY, BYTES)                                           \
+	FIELD(16, default_perms) /* default non-owner perms (FS_PERM_*) */                   \
+	FIELD(16, owner_node_id) /* the node the owner runs on */                            \
+	FIELD(32, owner_pid)                                                                 \
+	FIELD(64, owner_birth_time) /* PID reuse protection */                               \
+	FIELD(64, owner_exe_inode_ino) /* owner exe inode # (post-exec retention defense) */ \
+	FIELD(32, owner_exe_inode_dev) /* owner exe binary fs dev */                         \
+	BYTES(FS_DAEMON_IDENT_LEN, owner_group)                                              \
+	BYTES(FS_DAEMON_IDENT_LEN, owner_role)                                               \
+	FIELD(32, deleg_taken) /* bit i set before row i is written, cleared after it is emptied */
 
 CXL_DEFINE_LINE_VIEWS(layout_rat_acl, LAYOUT_RAT_ACL_FIELDS)
 
@@ -239,37 +248,6 @@ CXL_DEFINE_LINE_VIEWS(layout_rat_head, LAYOUT_RAT_HEAD_FIELDS)
 	BYTES(LAYOUT_RAT_MAP_RESERVED, reserved0)
 
 CXL_DEFINE_LINE_VIEWS(layout_rat_map, LAYOUT_RAT_MAP_FIELDS)
-
-static inline bool layout_rat_map_has(const union layout_rat_map_copy *map, u32 idx)
-{
-	return (map->local.taken[idx / LAYOUT_RAT_MAP_WORD_BITS] >> (idx % LAYOUT_RAT_MAP_WORD_BITS)) & 1U;
-}
-
-static inline void layout_rat_map_mark(union layout_rat_map_copy *map, u32 idx, bool taken)
-{
-	const u64 bit = 1ULL << (idx % LAYOUT_RAT_MAP_WORD_BITS);
-	if (taken)
-		map->local.taken[idx / LAYOUT_RAT_MAP_WORD_BITS] |= bit;
-	else
-		map->local.taken[idx / LAYOUT_RAT_MAP_WORD_BITS] &= ~bit;
-}
-
-/* The first slot at or past @from whose bit reads @taken, or LAYOUT_MAX_RAT_ENTRIES when none. */
-static inline u32 layout_rat_map_next(const union layout_rat_map_copy *map, u32 from, bool taken)
-{
-	for (u32 idx = from; idx < LAYOUT_MAX_RAT_ENTRIES;
-	     idx += LAYOUT_RAT_MAP_WORD_BITS - (idx % LAYOUT_RAT_MAP_WORD_BITS)) {
-		const u32 word_at = idx / LAYOUT_RAT_MAP_WORD_BITS;
-		u64 word = map->local.taken[word_at];
-		if (!taken)
-			word = ~word;
-		/* Bits below @from in its own word are behind us. */
-		word &= ~0ULL << (idx % LAYOUT_RAT_MAP_WORD_BITS);
-		if (word)
-			return word_at * LAYOUT_RAT_MAP_WORD_BITS + (u32)__builtin_ctzll(word);
-	}
-	return LAYOUT_MAX_RAT_ENTRIES;
-}
 
 /* The table itself: one header line, the summary line, then an entry per region file. */
 struct layout_rat {

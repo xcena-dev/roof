@@ -27,6 +27,21 @@ struct test_meta_turns {
 	u64 counts[TEST_META_TURN_KINDS];
 };
 
+/* Which scan read a delegation row, so a case can count one path's reads while a sweep reads beside
+ * it. */
+enum test_deleg_scan {
+	TEST_DELEG_SCAN_CHECK,
+	TEST_DELEG_SCAN_ROLE,
+	TEST_DELEG_SCAN_SLOT,
+	TEST_DELEG_SCAN_REVOKE,
+	TEST_DELEG_SCAN_SWEEP,
+	TEST_DELEG_SCAN_KINDS,
+};
+
+struct test_deleg_reads {
+	u64 counts[TEST_DELEG_SCAN_KINDS];
+};
+
 /* Where a metadata write can be made to die between two of its lines, numbered as the knob names
  * them. Dying means the node writes nothing more, releases nothing it holds and stops its
  * heartbeat, which is what a peer sees of a node that lost power there. */
@@ -40,6 +55,8 @@ enum test_crash_point {
 	TEST_CRASH_UNLINK_BEFORE_FREE = 6, /* name out of the index, entry still taken */
 	TEST_CRASH_ALLOC_WHILE_ALLOCATING = 7, /* entry ALLOCATING with nothing else written */
 	TEST_CRASH_FREE_WHILE_DELETING = 8, /* entry DELETING with its lines still intact */
+	TEST_CRASH_GRANT_BEFORE_ROW = 9, /* delegation bit set, its row still EMPTY */
+	TEST_CRASH_REVOKE_BEFORE_UNMARK = 10, /* delegation rows EMPTY, their bits still set */
 };
 
 /* Which metadata operation a stage sample belongs to, so a placement can be priced apart from an
@@ -126,6 +143,7 @@ void test_blank_summary(struct fs_sb_info *sbi);
 void test_blank_slots(struct fs_sb_info *sbi);
 void test_delay_before_claim_write(void);
 void test_delay_before_drain_refusal(void);
+void test_hold_meta_turn(enum test_meta_op op);
 bool test_crash_here(struct fs_sb_info *sbi, enum test_crash_point point);
 bool test_tick_is_frozen(u32 node_id);
 void test_set_tick_frozen(u32 node_id, bool frozen);
@@ -135,12 +153,15 @@ void test_set_tick_frozen(u32 node_id, bool frozen);
 u64 test_tick_stamp(u32 node_id, u64 real_now_ns);
 void test_set_stamp_offset(u32 node_id, s64 offset_ns);
 s64 test_get_stamp_offset(u32 node_id);
+void test_reset_node_faults(u32 node_id);
 /* A create on that node takes a fixed identity instead of asking the daemon, so a mount brought up
  * without one can still place regions. */
 bool test_daemon_is_stubbed(u32 node_id);
 void test_set_daemon_stubbed(u32 node_id, bool stubbed);
 void test_count_meta_turn(u32 node_id, enum test_meta_turn outcome);
 void test_get_meta_turns(u32 node_id, struct test_meta_turns *out);
+void test_count_deleg_read(u32 node_id, enum test_deleg_scan scan);
+void test_get_deleg_reads(u32 node_id, struct test_deleg_reads *out);
 void test_start_upcall(u64 seq, enum test_upcall_kind kind, u64 when_ns);
 void test_stamp_upcall(u64 seq, enum test_upcall_point point, u64 when_ns);
 void test_get_upcall_spans(enum test_upcall_kind kind, struct test_upcall_spans *out);
@@ -194,6 +215,12 @@ static inline void test_delay_before_drain_refusal(void)
 {
 }
 
+/* Nothing holds a turn on purpose, so a create gives its turn back as soon as it is done. */
+static inline void test_hold_meta_turn(enum test_meta_op op)
+{
+	(void)op;
+}
+
 /* Nothing dies on purpose, so every write runs to its end. */
 static inline bool test_crash_here(struct fs_sb_info *sbi, enum test_crash_point point)
 {
@@ -234,6 +261,12 @@ static inline s64 test_get_stamp_offset(u32 node_id)
 	return 0;
 }
 
+/* No fault was ever set, so a new mount has none to drop. */
+static inline void test_reset_node_faults(u32 node_id)
+{
+	(void)node_id;
+}
+
 /* No stub, so every create asks the daemon. */
 static inline bool test_daemon_is_stubbed(u32 node_id)
 {
@@ -255,6 +288,19 @@ static inline void test_count_meta_turn(u32 node_id, enum test_meta_turn outcome
 }
 
 static inline void test_get_meta_turns(u32 node_id, struct test_meta_turns *out)
+{
+	(void)node_id;
+	memset(out, 0, sizeof(*out));
+}
+
+/* Nobody counts, so a row read is the one line read and nothing more. */
+static inline void test_count_deleg_read(u32 node_id, enum test_deleg_scan scan)
+{
+	(void)node_id;
+	(void)scan;
+}
+
+static inline void test_get_deleg_reads(u32 node_id, struct test_deleg_reads *out)
 {
 	(void)node_id;
 	memset(out, 0, sizeof(*out));

@@ -131,7 +131,7 @@ Every requirement above is carried by a record, so where those records live is t
 |  | RAT summary | taken bitmap, placement count | the node holding the turn (placement, free) | the allocator, and the extent survey |
 |  | RAT entry hot | state, type, extent offset and size,<br>timestamps, mode | the node holding the turn (`create`, placement, free) | `open`, `read` and `stat` |
 |  | RAT entry name | the name | the node holding the turn (`create`, `unlink`, free) | a lookup whose tag matched |
-|  | RAT entry acl | owner identity, default permission | the node holding the turn (create, free,<br>the owner's default-permission change) | every permission check |
+|  | RAT entry acl | owner identity, default permission,<br>which delegation rows are taken | the node holding the turn (create, free, grant, revoke,<br>GC, the owner's default-permission change) | every permission check |
 |  | Delegation row | grantee identity, permissions,<br>when granted | the node holding the turn (grant) | every permission check, and GC |
 |  | Reference bits | one bit per region | the owning node alone (`open`, last `close`) | `unlink`, the last `close`, and the sweep that frees a region |
 | turn-taking | Lock region | the daemons' turn queues,<br>one region with a RAT entry of its own | the daemons, through their own mappings | the daemons |
@@ -191,6 +191,12 @@ Whichever came second sees the other, so an `open` racing an `unlink` either hol
 | process row | an `ACCESS_REQUEST` that the daemon's policy or a role row allowed | one process on one node, by its tgid and start time<br>and by its executable inode and exec generation | the writing node's GC finds that process dead,<br>its node unmounts or is recovered as dead,<br>or the region is freed |
 | account row | `FS_IOC_PERM_GRANT` from a caller holding `GRANT` or `ADMIN` | one account on one node, by uid and gid | it is revoked,<br>its node unmounts or is recovered as dead,<br>or the region is freed |
 | role row | `FS_IOC_PERM_GRANT` with kind `ROLE`, from a caller holding `GRANT` or `ADMIN` | one workload by the group and role its identity carries,<br>on every node or on one | it is revoked,<br>its writer's node unmounts or is recovered as dead,<br>or the region is freed |
+
+The acl line holds one taken bit per row.<br>
+A writer under the turn sets a row's bit before it writes the row, and clears the bit after it empties the row.<br>
+Every scan of the table reads only the rows whose bit is set.<br>
+The cost of a scan therefore follows the rows in use, and a hole that a revoke left costs nothing.<br>
+A bit that a crash left set over an empty row costs one read, until the next grant takes that slot.
 
 The kernel cannot read a process's group and role, so a role row is matched on the daemon's `ACCESS_REQUEST` answer.<br>
 That answer carries the caller's labels even when the policy refuses,<br>

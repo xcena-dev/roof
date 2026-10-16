@@ -314,11 +314,12 @@ waitForDmesg()
 # The stamp of the newest line, or 0 on an empty log.
 dmesgMark() { dmesg | tail -n 1 | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p' | grep . || echo 0; }
 
-# Places a region and holds it mapped until killed, printing the holder's pid.
+# Places a region and holds it mapped until killed, printing the holder's pid. Anything after the
+# region name goes to the mapper, so --own <perms> makes the holder the region's owner.
 #
-# Held, and not placed and let go, because a region whose creator has exited and that carries no
-# delegation is an orphan its own node reclaims on the next sweep. That sweep would then be what
-# removed it, and a case about recovery would be reading somebody else's work.
+# Held, and not placed and let go, because a region whose creator has exited and that no process
+# row or mapping holds is an orphan its own node reclaims on the next sweep. That sweep would then
+# be what removed it, and a case about recovery would be reading somebody else's work.
 #
 # The caller takes the holder down before it umounts: a vma keeps a reference on the file and that
 # reference pins the vfsmount.
@@ -326,7 +327,7 @@ startHolder()
 {
     local out="${WORK}/holder-$2.out"
     : >"$out"
-    "$MAPPER" "${MNT_BASE}-$1" "$2" >"$out" 2>"${WORK}/holder-$2.err" &
+    "$MAPPER" "${MNT_BASE}-$1" "$2" "${@:3}" >"$out" 2>"${WORK}/holder-$2.err" &
     local pid=$!
     local waited=0
 
@@ -1039,27 +1040,36 @@ fi
 # Two regions end differently, and the rows decide which. A row carrying the dead node goes wherever
 # it sits. Node 1's region therefore loses one row and keeps the other, and keeps its owner.
 #
-# The region the dead node owned still has a live node's row on it, so freeing it would take a region
-# from a caller holding a grant. It is marked instead, and the whole owner identity goes with the
+# The region the dead node owned is still mapped by a reader on a live node, so freeing it would pull
+# the bytes from under that reader. It is marked instead, and the whole owner identity goes with the
 # mark: a node id nobody holds is what stops a later holder of that id reading itself as the owner.
+# A grant row alone would not keep it, since a grant buys access and not lifetime.
 setCase T9
 note "a recovery clears the dead node's rows and marks what it cannot free"
 
+keptOwner=""
+markedOwner=""
+markedReader=""
 if hasMapper "no grant can be issued"; then
     beginCase T9
 
     mountFormatterThenPeers t9n 2 3
 
-    # The owner opens each region with READ|WRITE|GRANT as a default, because a row written on one
-    # node is invisible on another and a peer would otherwise have no way in. Each node then writes
-    # its own row for 0x3: a caller holding GRANT rather than ADMIN may not pass GRANT on.
-    defaultOn t9n1 t9-kept 0x23 || fail "node 1 could not open its own region: $(grantErr)"
+    # Each owner stays up, since one that exited would leave an orphan its node sweeps, and opens its
+    # region to every node as READ|WRITE|GRANT: a row written on one node is invisible on another.
+    # Each node then writes its own 0x3 row, since GRANT without ADMIN may not pass GRANT on.
+    keptOwner="$(startHolder t9n1 t9-kept --own 0x23)" ||
+        fail "node 1 could not own a region: $(holderErr t9-kept)"
     grantOn t9n1 t9-kept 0x3 || fail "node 1 could not grant on its own region: $(grantErr)"
     grantOn t9n2 t9-kept 0x3 || fail "node 2 could not grant on node 1's region: $(grantErr)"
 
-    defaultOn t9n2 t9-marked 0x23 || fail "node 2 could not open its own region: $(grantErr)"
+    markedOwner="$(startHolder t9n2 t9-marked --own 0x23)" ||
+        fail "node 2 could not own a region: $(holderErr t9-marked)"
     grantOn t9n2 t9-marked 0x3 || fail "node 2 could not grant on its own region: $(grantErr)"
     grantOn t9n3 t9-marked 0x3 || fail "node 3 could not grant on node 2's region: $(grantErr)"
+    # The reader that outlives the owner node, and what T10 lets finish.
+    markedReader="$(startHolder t9n3 t9-marked)" ||
+        fail "node 3 could not map node 2's region: $(holderErr t9-marked)"
 
     if [ "$(delegNodes t9-kept)" = "node=1 node=2 " ] && [ "$(delegNodes t9-marked)" = "node=2 node=3 " ]; then
         pass "each region carries a row from two nodes"
@@ -1092,7 +1102,7 @@ if hasMapper "no grant can be issued"; then
         fail "t9-kept is $(regionState t9-kept) owned by node $(regionOwner t9-kept)"
     fi
 
-    # Its own region keeps the live node's row, so it is marked rather than freed.
+    # Its own region keeps the live node's reader, so it is marked rather than freed.
     if [ "$(regionState t9-marked)" = "OWNER_DEAD" ]; then
         pass "the region it owned is marked, not freed"
     else
@@ -1120,6 +1130,8 @@ if hasMapper "no grant can be issued"; then
         fail "node 2 came back and kept serving"
     fi
 
+    stopHolder "$markedOwner"
+    stopHolder "$keptOwner"
     umountNode t9n2
 fi
 
@@ -1131,11 +1143,12 @@ fi
 #
 # The mark is not a fence. Its readers are being let finish, so a default still admits one and the
 # extent stays occupied. What ends is anything new: no row may be added, and the region goes as soon
-# as the last row does.
+# as its last reader does.
 setCase T10
 note "what a marked region refuses, and what it still answers"
 
 if [ "$(regionState t9-marked)" != "OWNER_DEAD" ]; then
+    stopHolder "$markedReader"
     skip "T9 left no marked region to work on"
 fi
 
@@ -1159,18 +1172,20 @@ t10Holder="$(startHolder t9n3 t9-marked)" && pass "a default still admits a read
     fail "a marked region refused a reader its default admits: $(holderErr t9-marked)"
 stopHolder "$t10Holder"
 
-# The last row goes, and with it the region.
-mark="$(dmesgMark)"
+# A caller still gives up the row that names it, and that row never kept the region.
 if revokeOn t9n3 t9-marked 0; then
-    pass "the last row can be given up"
+    pass "a row on a marked region can still be given up"
 else
-    fail "the last row could not be given up: $(grantErr)"
+    fail "a row on a marked region could not be given up: $(grantErr)"
 fi
 
+# The last reader goes, and with it the region.
+mark="$(dmesgMark)"
+stopHolder "$markedReader"
 if waitForDmesg "$mark" "gc reclaiming RAT entry"; then
-    pass "and the region goes with it"
+    pass "and the region goes with its last reader"
 else
-    fail "the marked region outlived its last row"
+    fail "the marked region outlived its last reader"
 fi
 
 endCase t9n3 t9n1

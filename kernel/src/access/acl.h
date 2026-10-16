@@ -8,11 +8,15 @@
 
 #include <linux/types.h>
 
+#include "cxl/io.h" /* struct cxl_cacheline, which a taken row carries by value */
 #include "daemon_uapi.h" /* FS_DAEMON_IDENT_LEN */
+#include "test/test_hooks.h" /* enum test_deleg_scan */
 
 struct fs_sb_info;
 struct layout_rat_entry;
 struct pid;
+union acl_deleg_entry;
+union layout_rat_acl_copy;
 
 /* ================================== What the calling task is ================================== */
 /* Read once and carried to the helper, so what it judges is the task itself and not a later /proc. */
@@ -49,6 +53,29 @@ struct acl_role_key {
 /* @src as a row holds a label: 1 to FS_DAEMON_IDENT_LEN - 1 bytes, NUL-padded. False for an empty or
  * unterminated one, which names no workload. */
 bool acl_copy_label(char *dst, const char *src);
+
+/* ================================= Which rows a scan reads =================================== */
+/* One taken row as a scan visits it: its slot, its address, and its line read in one load, so state,
+ * kind and node come from the same instant. @rows_left is the walk's own. */
+struct acl_taken_row {
+	u32 rows_left;
+	u32 idx;
+	union acl_deleg_entry *row;
+	struct cxl_cacheline line;
+};
+
+/* Reads the next row @pos has left, counted for @scan. False once none is left. */
+bool acl_next_taken_row(struct fs_sb_info *sbi, struct layout_rat_entry *rat_entry, enum test_deleg_scan scan,
+			struct acl_taken_row *pos);
+
+/* Each row @taken marks, lowest first, and no other: no ACTIVE row sits under a clear bit. */
+#define acl_for_each_taken_row(sbi, rat_entry, taken, scan, pos)                       \
+	for (struct acl_taken_row pos = { .rows_left = (taken) & ACL_DELEG_ALL_ROWS }; \
+	     acl_next_taken_row((sbi), (rat_entry), (scan), &(pos));)
+
+/* Takes @rows off @acl's mask, once the caller has emptied them under the turn, and puts the line back.
+ * The lock region keeps its node slots: bring-up rewrites one there with no turn to mark it under. */
+void acl_clear_taken_rows(struct layout_rat_entry *rat_entry, union layout_rat_acl_copy *acl, u32 rows);
 
 /* ================================ Whether an access is allowed ================================ */
 /* Every bit in @required_perms, or -EACCES. */
