@@ -57,6 +57,7 @@ enum test_crash_point {
 	TEST_CRASH_FREE_WHILE_DELETING = 8, /* entry DELETING with its lines still intact */
 	TEST_CRASH_GRANT_BEFORE_ROW = 9, /* delegation bit set, its row still EMPTY */
 	TEST_CRASH_REVOKE_BEFORE_UNMARK = 10, /* delegation rows EMPTY, their bits still set */
+	TEST_CRASH_RECOVER_MIDWAY = 11, /* one entry of a dead node cleared, the rest still naming it */
 };
 
 /* Which metadata operation a stage sample belongs to, so a placement can be priced apart from an
@@ -145,6 +146,7 @@ void test_delay_before_claim_write(void);
 void test_delay_before_drain_refusal(void);
 void test_hold_meta_turn(enum test_meta_op op);
 bool test_crash_here(struct fs_sb_info *sbi, enum test_crash_point point);
+bool test_clean_is_refused(u32 node_id);
 bool test_tick_is_frozen(u32 node_id);
 void test_set_tick_frozen(u32 node_id, bool frozen);
 /* The stamp a tick would write for @node_id, offset by whatever a test last set: 0 leaves
@@ -226,6 +228,13 @@ static inline bool test_crash_here(struct fs_sb_info *sbi, enum test_crash_point
 {
 	(void)sbi;
 	(void)point;
+	return false;
+}
+
+/* Nothing refuses on purpose, so the clean step frees every entry it can lock. */
+static inline bool test_clean_is_refused(u32 node_id)
+{
+	(void)node_id;
 	return false;
 }
 

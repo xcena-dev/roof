@@ -179,6 +179,18 @@ bool test_crash_here(struct fs_sb_info *sbi, enum test_crash_point point)
 	return true;
 }
 
+/* Stands in for an entry that will not free, such as one whose index bucket is broken: the clean
+ * step for this node_id frees none of the entries that node owned. */
+static u32 gc_inject_clean_refusal;
+module_param(gc_inject_clean_refusal, uint, 0600);
+MODULE_PARM_DESC(gc_inject_clean_refusal,
+		 "TEST: the clean step for this node_id frees none of its entries (0 = none)");
+
+bool test_clean_is_refused(u32 node_id)
+{
+	return node_id != 0 && READ_ONCE(gc_inject_clean_refusal) == node_id;
+}
+
 /* One shot at the next mount: the RAT summary line is zeroed before that mount checks it, which is
  * the line a device formatted before the summary existed shows. */
 static u32 region_inject_blank_summary;

@@ -429,13 +429,13 @@ static bool gc_has_node_owner(struct layout_rat_entry *entry, u32 node_id)
 }
 
 /*
- * Marks an entry whose owner's node is gone, so that its readers can finish.
+ * Marks an entry whose owner's node is gone, so its readers can finish and a later sweep frees it.
  *
  * Nobody takes it over: ownership carries a policy context of the process that made the region, and
  * there is no process here to carry it. The whole identity goes with the state, because a node id
  * nobody holds is what stops a later holder of that id reading itself as the owner.
  */
-static void gc_mark_owner_dead(struct layout_rat_entry *entry, u32 index, u32 node_id)
+static void gc_mark_owner_dead(struct layout_rat_entry *entry)
 {
 	/* The state first and the identity after, since the two lines cannot be written as one. A
 	 * crash here leaves an entry the admin still sweeps and a rerun still recognises. */
@@ -454,8 +454,6 @@ static void gc_mark_owner_dead(struct layout_rat_entry *entry, u32 index, u32 no
 	memset(acl.local.owner_group, 0, sizeof(acl.local.owner_group));
 	memset(acl.local.owner_role, 0, sizeof(acl.local.owner_role));
 	cxl_set_layout_rat_acl(&entry->acl, &acl);
-
-	pr_info("gc: RAT entry %u kept for its readers, node %u gone\n", index, node_id);
 }
 
 /*
@@ -465,8 +463,8 @@ static void gc_mark_owner_dead(struct layout_rat_entry *entry, u32 index, u32 no
  * process table can make about a remote pid, and it is the statement the eviction rests on.
  *
  * An entry the dead node owned goes only when no process row is left on it, because a process row
- * is what a consumer stakes to keep a region past its owner. An entry that still carries one is
- * marked OWNER_DEAD: nothing new starts on it, and the ordinary sweep takes it when the last goes.
+ * is what a consumer stakes to keep a region past its owner. An entry that still carries one, or that
+ * will not free, is marked OWNER_DEAD: nothing new starts on it, and the ordinary sweep takes it later.
  * Rows a live node wrote are left alone, since a grant nobody revoked is not this sweep's to
  * withdraw.
  */
@@ -516,13 +514,23 @@ static bool gc_recover_dead_node(struct fs_sb_info *sbi, u32 node_id)
 		gc_drop_node_delegations(sbi, entry, node_id);
 
 		if (owned) {
-			if (gc_has_active_row(sbi, entry, ACL_DELEG_KIND_PROCESS, GC_ROW_ANY) || region_has_refs(sbi, i))
-				gc_mark_owner_dead(entry, i, node_id);
-			else if (!gc_cleanup_rat_entry(sbi, entry, true))
-				clear = false;
+			if (gc_has_active_row(sbi, entry, ACL_DELEG_KIND_PROCESS, GC_ROW_ANY) || region_has_refs(sbi, i)) {
+				gc_mark_owner_dead(entry);
+				pr_info("gc: RAT entry %u kept for its readers, node %u gone\n", i, node_id);
+			} else if (test_clean_is_refused(node_id) || !gc_cleanup_rat_entry(sbi, entry, true)) {
+				/* Marked, so no row names the node any more and this recovery still ends. */
+				gc_mark_owner_dead(entry);
+				pr_warn("gc: RAT entry %u of node %u not freed, marked for the admin\n", i, node_id);
+			}
 		}
 
 		meta_unlock(sbi, &lock);
+
+		/* Between two entries, so the recoverer dies holding no turn the next admin waits on. */
+		if (test_crash_here(sbi, TEST_CRASH_RECOVER_MIDWAY)) {
+			clear = false;
+			break;
+		}
 	}
 
 	mutex_unlock(&sbi->gc_sweep_lock);

@@ -135,6 +135,9 @@ It checks that the mount comes down and that no task is left in uninterruptible 
 | T12 | A dead owner's region that a reader holds through the default alone is marked, not freed, and goes when the reader does. |
 | T13 | An unlinked extent held only by a node that then dies goes back once that node is recovered. |
 | T14 | A clean unmount clears every row naming the node before its slot goes, so a region a peer holds is marked and the id's next holder owns none of it. |
+| T15 | A stamp outside the wall-clock window that keeps moving is not staked, and is staked once it stops. |
+| T16 | An entry the recovery cannot free is logged and marked, and the recovery of its node and of the next one still ends. |
+| T17 | A recovery whose admin dies partway through the clean step is finished by the next admin. |
 | T1 | A formatter that never publishes is stolen from. Runs last, since it ends with a slot held. |
 
 ## Two hosts

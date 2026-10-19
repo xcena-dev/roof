@@ -1527,6 +1527,152 @@ if hasMapper "no reader can hold a region"; then
 fi
 
 # ---------------------------------------------------------------------------
+# T16: an entry that will not free does not stall a recovery
+# ---------------------------------------------------------------------------
+
+# Node 1 owns a region whose entry the clean step cannot free, and node 2 stops beside it. Both
+# recoveries must still end, and the admin's own sweep must take the entry once nothing names node 1.
+setCase T16
+note "an entry that will not free does not stall a recovery"
+
+if hasMapper "node 1 has no region to leave behind"; then
+    beginCase T16
+    mountFormatterThenPeers t16n 2 3
+
+    # Node 1's own sweep stops first, so the region outlives its creator for the recovery to find.
+    pauseGc 1 1
+    makeRegion t16n1 t16-stuck || fail "node 1 could not place a region: $(mkRegionErr)"
+
+    setParam gc_inject_clean_refusal 1
+    mark="$(dmesgMark)"
+
+    # Stopped altogether, so node 3 is the only node that recovers anyone.
+    pauseGc 2 1
+    freezeTick 1 1
+    freezeTick 2 1
+    sleep "$HEARTBEAT_WAIT_S"
+
+    if waitForDmesg "$mark" "node 3 freed slot 0, node 1 recovered" "$((RECOVERY_WAIT_S * 2))"; then
+        pass "node 1 was freed although its entry would not free"
+    else
+        fail "node 1's recovery stalled on an entry that would not free"
+    fi
+
+    if dmesgSince "$mark" | grep -q "of node 1 not freed, marked for the admin"; then
+        pass "and the entry it could not free was logged and left behind"
+    else
+        fail "no line for the entry the clean step could not free"
+    fi
+
+    if waitForDmesg "$mark" "node 3 freed slot 1, node 2 recovered"; then
+        pass "node 2 was freed after it"
+    else
+        fail "node 2 waited behind node 1"
+    fi
+
+    # Nothing else in this case is left to reclaim, so the first such line is the entry node 1 left.
+    if waitForDmesg "$mark" "gc reclaiming RAT entry" && ! hasRegion t16n3 t16-stuck; then
+        pass "and the admin's sweep took the entry once nothing named node 1"
+    else
+        fail "the entry node 1 left is still there"
+    fi
+
+    setParam gc_inject_clean_refusal 0
+    for node in 1 2; do
+        pauseGc "$node" 0
+        freezeTick "$node" 0
+    done
+
+    fenced=0
+    for node in 1 2; do
+        waitForDmesg "$mark" "node ${node} lost slot $((node - 1)), fencing this mount" && fenced=$((fenced + 1))
+    done
+    if [ "$fenced" -eq 2 ]; then
+        pass "and both fenced themselves on the way back"
+    else
+        fail "only ${fenced} of 2 fenced"
+    fi
+
+    umountNode t16n1
+    umountNode t16n2
+    endCase t16n3
+fi
+
+# ---------------------------------------------------------------------------
+# T17: a recovery whose admin dies partway through the clean step is finished by the next admin
+# ---------------------------------------------------------------------------
+
+# T6 stops the admin between the stake and the clean. Here it dies inside the clean, with one of
+# node 2's two regions freed and the other still named, so node 3 has to finish a half-done clean.
+setCase T17
+note "a recovery whose admin dies partway through the clean step is finished by the next admin"
+
+if hasMapper "node 2 has no regions to recover"; then
+    beginCase T17
+    mountFormatterThenPeers t17n 2 3
+
+    # Node 2's own sweep stops first, so its regions outlive their creator for the recovery to find.
+    pauseGc 2 1
+    makeRegion t17n2 t17-first || fail "node 2 could not place its first region: $(mkRegionErr)"
+    makeRegion t17n2 t17-second || fail "node 2 could not place its second region: $(mkRegionErr)"
+
+    mark="$(dmesgMark)"
+    setParam region_inject_crash_point 11
+    freezeTick 2 1
+    sleep "$HEARTBEAT_WAIT_S"
+
+    if waitForDmesg "$mark" "node 1 took node 2 for dead"; then
+        pass "the admin staked node 2"
+    else
+        fail "node 1 never staked node 2"
+    fi
+
+    if waitForDmesg "$mark" "node 1 died at crash point 11"; then
+        pass "and died inside the clean step"
+    else
+        fail "the admin's clean step never reached the crash point"
+    fi
+
+    left=0
+    for region in t17-first t17-second; do
+        hasRegion t17n3 "$region" && left=$((left + 1))
+    done
+    if [ "$left" -eq 1 ]; then
+        pass "with one of node 2's regions freed and one still there"
+    else
+        fail "${left} of node 2's two regions were left when the admin died"
+    fi
+
+    if waitForDmesg "$mark" "node 3 took node 2 for dead" "$((RECOVERY_WAIT_S * 2))"; then
+        pass "the next admin picked the half-done recovery up"
+    else
+        fail "node 3 never took over"
+    fi
+
+    if waitForDmesg "$mark" "node 3 freed slot 1, node 2 recovered" "$((RECOVERY_WAIT_S * 2))"; then
+        pass "and carried it through to the slot being freed"
+    else
+        fail "node 3 took over but never finished"
+    fi
+
+    if hasRegion t17n3 t17-first || hasRegion t17n3 t17-second; then
+        fail "a region of node 2 outlived its recovery"
+    else
+        pass "and the region the first admin left went with it"
+    fi
+
+    if waitForDmesg "$mark" "node 3 freed slot 0, node 1 recovered"; then
+        pass "the admin that died was recovered in turn"
+    else
+        fail "node 1's slot was never freed"
+    fi
+
+    freezeTick 2 0
+    pauseGc 2 0
+    endCase t17n3 t17n2 t17n1
+fi
+
+# ---------------------------------------------------------------------------
 # T1: a formatter that never publishes is stolen from
 # ---------------------------------------------------------------------------
 beginCase T1 "$FORMAT_TIMEOUT_MS"
