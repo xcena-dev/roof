@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -93,17 +94,10 @@ using fsuser::tests::readRegionRows;
 
 // Reads back both stamped ends of a node's own region. False when a byte is not what this node
 // wrote, which is what a second placement over the same extent produces.
-[[nodiscard]] bool stampHeld(const std::uint8_t* bytes, std::uint8_t stamp, std::int32_t node,
-                             std::int32_t round)
+[[nodiscard]] bool stampHeld(const std::uint8_t* bytes, std::uint8_t stamp)
 {
-    if (sliceHolds(bytes, stamp, StampBytes) &&
-        sliceHolds(bytes + PlacementSize - StampBytes, stamp, StampBytes))
-    {
-        return true;
-    }
-    std::fprintf(stderr, "  FAIL node %d round %d: an end of the placement is not 0x%02x\n", node,
-                 round, stamp);
-    return false;
+    return sliceHolds(bytes, stamp, StampBytes) &&
+           sliceHolds(bytes + PlacementSize - StampBytes, stamp, StampBytes);
 }
 
 // One node's first phase, in its own process. Returns 0 when every round completed and read back
@@ -132,8 +126,10 @@ using fsuser::tests::readRegionRows;
                 std::memset(bytes, stamp, StampBytes);
                 std::memset(bytes + PlacementSize - StampBytes, stamp, StampBytes);
 
-                if (!stampHeld(bytes, stamp, node, round))
+                if (!stampHeld(bytes, stamp))
                 {
+                    std::fprintf(stderr, "  FAIL node %d round %d: an end of the placement is not 0x%02x\n",
+                                 node, round, stamp);
                     return 1;
                 }
             }
@@ -149,9 +145,10 @@ using fsuser::tests::readRegionRows;
     return 0;
 }
 
-// Waits for every node's slice of @bytes to hold its stamp. Polls rather than meeting the others at
-// a barrier, so a node that died takes the deadline with it instead of blocking the rest forever.
-[[nodiscard]] bool everySliceArrived(const std::uint8_t* bytes, std::int32_t nodes, std::int32_t node)
+// Waits for every node's slice of @bytes to hold its stamp, and names the first node whose slice did
+// not arrive by the deadline. Polls rather than meeting the others at a barrier, so a node that died
+// takes the deadline with it instead of blocking the rest forever.
+[[nodiscard]] std::optional<std::int32_t> findMissingSlice(const std::uint8_t* bytes, std::int32_t nodes)
 {
     const auto until = std::chrono::steady_clock::now() +
                        std::chrono::milliseconds(SharedDeadlineMillis);
@@ -165,14 +162,12 @@ using fsuser::tests::readRegionRows;
         {
             if (std::chrono::steady_clock::now() > until)
             {
-                std::fprintf(stderr, "  FAIL node %d: node %d's slice reads 0x%02x, not 0x%02x\n",
-                             node, other, slice[0], stamp);
-                return false;
+                return other;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(SharedPollMillis));
         }
     }
-    return true;
+    return std::nullopt;
 }
 
 // One node's second phase: map the region every other node is also mapping, stamp this node's slice,
@@ -190,7 +185,15 @@ using fsuser::tests::readRegionRows;
         auto* mine = bytes + (static_cast<std::uint64_t>(node) * StampBytes);
         std::memset(mine, stampByte(node, SharedRound), StampBytes);
 
-        return everySliceArrived(bytes, nodes, node) ? 0 : 1;
+        const auto missing = findMissingSlice(bytes, nodes);
+        if (!missing.has_value())
+        {
+            return 0;
+        }
+        const auto* slice = bytes + (static_cast<std::uint64_t>(*missing) * StampBytes);
+        std::fprintf(stderr, "  FAIL node %d: node %d's slice reads 0x%02x, not 0x%02x\n", node, *missing,
+                     slice[0], stampByte(*missing, SharedRound));
+        return 1;
     }
     catch (const std::exception& failure)
     {

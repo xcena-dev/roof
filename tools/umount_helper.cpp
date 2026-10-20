@@ -61,9 +61,8 @@ std::int32_t writePrepare(const std::string& preparePath)
     return closed ? 0 : errno;
 }
 
-// Asks the kernel for the clean step and says whether the unmount may go on. A refusal leaves the
-// mount and its daemon as they are, and says which of the two reasons it was.
-bool clearNodeRows(const std::string& preparePath, const std::string& target)
+// Asks the kernel for the clean step. The errno it was last refused with, or 0 once it ran.
+[[nodiscard]] std::int32_t clearNodeRows(const std::string& preparePath)
 {
     auto refused = writePrepare(preparePath);
     // EAGAIN is a turn held past the kernel's own retries, which a later try can still get.
@@ -72,23 +71,7 @@ bool clearNodeRows(const std::string& preparePath, const std::string& target)
         std::this_thread::sleep_for(PrepareRetryWait);
         refused = writePrepare(preparePath);
     }
-    if (refused == EBUSY)
-    {
-        std::fprintf(stderr, FS_PROGRAM_NAME
-                     ": %s: a file on %s is still open; nothing was cleared, "
-                     "and the daemon is left running\n",
-                     preparePath.c_str(), target.c_str());
-        return false;
-    }
-    if (refused != 0)
-    {
-        std::fprintf(stderr, FS_PROGRAM_NAME
-                     ": %s: %s; this node's turn could not be taken, so check "
-                     "that its daemon is running; the daemon is left as it is\n",
-                     preparePath.c_str(), std::strerror(refused));
-        return false;
-    }
-    return true;
+    return refused;
 }
 
 // A C handle closed by the call its own library names. A deleter type rather than a function
@@ -195,9 +178,23 @@ int main(int argc, char** argv)
     {
         // While the daemon is still up: the rows this node wrote go under a turn only that daemon
         // can take, and kill_sb runs after the stop below with nobody to take it.
+        // A refusal leaves the mount and its daemon as they are, and says which of the two reasons it was.
         const auto preparePath = fstools::nameNodeSysfsPath(*nodeId, "unmount_prepare");
-        if (!clearNodeRows(preparePath, target))
+        const auto refused = clearNodeRows(preparePath);
+        if (refused == EBUSY)
         {
+            std::fprintf(stderr, FS_PROGRAM_NAME
+                         ": %s: a file on %s is still open; nothing was cleared, "
+                         "and the daemon is left running\n",
+                         preparePath.c_str(), target.c_str());
+            return 1;
+        }
+        if (refused != 0)
+        {
+            std::fprintf(stderr, FS_PROGRAM_NAME
+                         ": %s: %s; this node's turn could not be taken, so check "
+                         "that its daemon is running; the daemon is left as it is\n",
+                         preparePath.c_str(), std::strerror(refused));
             return 1;
         }
 
