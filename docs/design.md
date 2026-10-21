@@ -128,8 +128,9 @@ Every requirement above is carried by a record, so where those records live is t
 | names | Shard header | magic, bucket and pool geometry | the formatting node, once | every mount, then cached in DRAM |
 |  | Index link | name tag, region id, next link | the node holding the turn (`create`, `unlink`) | every name lookup |
 | region state | RAT header | magic, version, where the regions start | the formatting node, once | every mount |
-|  | RAT summary | taken bitmap, placement count | the node holding the turn (placement, free) | the allocator, and the extent survey |
-|  | RAT entry hot | state, type, extent offset and size,<br>timestamps, mode | the node holding the turn (`create`, placement, free) | `open`, `read` and `stat` |
+|  | RAT summary | taken bitmap, placement count | the node holding the turn (placement, free) | the allocator, and every placement |
+|  | RAT entry hot | state, type, placement and piece count,<br>timestamps, mode | the node holding the turn (`create`, placement, free) | `open`, `read` and `stat` |
+|  | RAT entry pieces | up to four pieces,<br>each an offset, a length in granules and a device | the node holding the turn (placement) | `read`, the fault paths, `stat`,<br>and every placement |
 |  | RAT entry name | the name | the node holding the turn (`create`, `unlink`, free) | a lookup whose tag matched |
 |  | RAT entry acl | owner identity, default permission,<br>which delegation rows are taken | the node holding the turn (create, free, grant, revoke,<br>GC, the owner's default-permission change) | every permission check |
 |  | Delegation row | grantee identity, permissions,<br>when granted | the node holding the turn (grant) | every permission check, and GC |
@@ -170,9 +171,15 @@ A region is created, placed, opened, shared and freed,<br>and each step is a pro
 
 ### 8.1 Creation
 
-![Create and place as a sequence. open(O_CREAT) sends ATTEST for the group and role with no lock held, then takes the mutex and the turn. The kernel picks a free index from the taken bitmap, moves the hot line from FREE to ALLOCATING, fills the name and acl lines, and publishes ALLOCATED with no extent yet. It writes the bucket slot, sets the taken bit, gives the turn and the mutex back, and returns the descriptor. ftruncate(size) takes the mutex and the turn again, finds a gap in the pool the cache policy names, writes offset and size into the hot line, bumps the placement count and returns. A reader on any node sees an entry before or after each write, never between.](figs/create.png)
+![Create and place as a sequence. open(O_CREAT) sends ATTEST for the group and role with no lock held, then takes the mutex and the turn. The kernel picks a free index from the taken bitmap, moves the hot line from FREE to ALLOCATING, fills the name and acl lines, and publishes ALLOCATED with no pieces yet. It writes the bucket slot, sets the taken bit, gives the turn and the mutex back, and returns the descriptor. ftruncate(size) takes the mutex and the turn again and finds gaps in the pool the region's attributes name. It makes the placement count odd, writes up to four pieces into the piece line, commits their count in the hot line, makes the count even and returns. A reader on any node sees an entry before or after each write, never between.](figs/create.png)
 
 The acl line carries the creator's tgid, start time, executable inode, group and role before the entry publishes `ALLOCATED`, so the owner record stands from that store on.
+
+A region asks for one of two placements with `FS_IOC_REGION_ATTR_SET` before `ftruncate()`, and the choice is fixed once it is placed.<br>
+Contiguous is the default and takes one range from the low end of the first gap that holds it, which a device-side reader needs.<br>
+Paged takes the smallest gap that holds the whole size, from that gap's high end.<br>
+Only when no gap holds it does it take whole gaps, smallest first, up to four pieces.<br>
+The uncached pool takes contiguous only, since `mmap` maps a region there with one remap.
 
 ### 8.2 Open, Close and Unlink
 
@@ -407,7 +414,7 @@ This one states what it leaves alone, and what a later release has to add.
 |---|---|---|
 | Revocation | No path revokes a permission.<br>A row ends only on the events in [Grant and Access](#83-grant-and-access). | Say what it stops: the rows, a standing mapping, or both.<br>Reach one process as well as a whole account, and a row another node wrote. |
 | Region lifetime | A region nobody holds is freed when its owner's process or mount goes,<br>even if a later reader was meant to find it. | Let an owner keep a region past its own exit and unmount.<br>Say who may end such a region and who reclaims it. |
-| Region size | A region is sized once with `ftruncate()`.<br>Its extent is one contiguous range of the pool. | Grow a region by adding extents that later mappings see.<br>Shrink only a tail that no node holds mapped. |
+| Region size | A region is sized once with `ftruncate()`.<br>It is one contiguous range of the pool, or up to four pieces when it asks for a paged placement. | Grow a region by adding pieces that later mappings see.<br>Shrink only a tail that no node holds mapped. |
 | Root and the kernel | Trusting the host kernel means trusting root as well. | Keep root from replacing the kernel or this module once the host has booted.<br>Have the daemon confirm that it talks to this module and not to a stand-in.<br>(for example, a signed module under Secure Boot lockdown) |
 | Daemon responses | A response is trusted for the descriptor it arrived on. | Let the kernel check that a response came from the daemon it trusts,<br>not only that it arrived on the right descriptor.<br>(for example, a response signature with a key sealed in a TPM) |
 | Daemon isolation | The daemon runs as an ordinary host process. | Keep the daemon's identity and decisions out of reach of other host processes, root included.<br>Judge what a process runs and how its memory changes, not only who it was when attested.<br>(for example, a daemon in a TEE, with executables appraised at `execve`) |
