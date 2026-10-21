@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * sysfs_region.c - region_info, pool_info and the rat/ directory.
+ * sysfs_region.c - region_info, pool_info and the rat/ and extents/ directories.
  *
  * Every attribute here reads the RAT through the first registered sbi, so each holds sysfs_lock
  * for the read and answers with what the medium held at that moment.
@@ -17,6 +17,16 @@
 #include "region/region.h"
 #include "sysfs/sysfs_internal.h"
 #include "sysfs/sysfs_region.h"
+
+static struct region_extent sysfs_read_region_columns(struct fs_sb_info *sbi, u32 idx,
+						      const union layout_rat_hot_copy *hot)
+{
+	struct region_extent extents[LAYOUT_MAX_EXTENTS];
+	const s32 count = region_read_extents(sbi, idx, hot, extents);
+	if (count <= 0)
+		return (struct region_extent){ 0 };
+	return (struct region_extent){ .offset = extents[0].offset, .length = region_sum_extents(extents, (u32)count) };
+}
 
 /* /sys/fs/<fs>/region_info */
 static ssize_t region_info_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
@@ -54,10 +64,11 @@ static ssize_t region_info_show(struct kobject *kobj, struct kobj_attribute *att
 
 			/* Where an operator sees a region outliving the node that made it, so it is
 			 * named rather than left out. */
+			const struct region_extent columns = sysfs_read_region_columns(sbi, i, &hot);
 			len += sysfs_emit_at(buf, len, "%u\t%u\t%u\t%s\t%llu\t0x%llx\t%s\n", i,
 					     acl.local.owner_node_id, acl.local.owner_pid,
 					     hot.local.state == LAYOUT_RAT_ENTRY_OWNER_DEAD ? "OWNER_DEAD" : "ALLOCATED",
-					     hot.local.size, hot.local.phys_offset, name);
+					     columns.length, columns.offset, name);
 		}
 	} while (false);
 
@@ -159,8 +170,9 @@ static ssize_t rat_slot_show(struct kobject *kobj, struct kobj_attribute *attr, 
 		cxl_get_layout_rat_acl(&acl, &entry->acl);
 		struct cxl_cacheline line;
 		const char *name = layout_read_rat_name(entry, &line);
+		const struct region_extent columns = sysfs_read_region_columns(sbi, slot, &hot);
 		len = sysfs_emit(buf, "%u\t%u\t%s\t%llu\t0x%llx\t%s\n", acl.local.owner_node_id, acl.local.owner_pid,
-				 region_read_rat_state_name(hot.local.state), hot.local.size, hot.local.phys_offset, name);
+				 region_read_rat_state_name(hot.local.state), columns.length, columns.offset, name);
 	} while (false);
 	mutex_unlock(&sysfs_lock);
 	return len;
@@ -171,6 +183,41 @@ static const struct attribute_group rat_slot_attr_group = {
 	.attrs = rat_slot_attr_ptrs,
 };
 
+/*
+ * /sys/fs/<fs>/extents/<slot>: one "<offset>\t<length>" line per piece, in file order, since rat/
+ * shows a paged region only by its first piece and its total. A slot with no region shows nothing.
+ */
+static struct kobj_attribute extent_slot_attrs[LAYOUT_MAX_RAT_ENTRIES];
+static struct attribute *extent_slot_attr_ptrs[LAYOUT_MAX_RAT_ENTRIES + 1];
+
+static ssize_t extent_slot_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	const u32 slot = (u32)(attr - extent_slot_attrs);
+	u32 len = 0;
+
+	mutex_lock(&sysfs_lock);
+	struct fs_sb_info *sbi = sysfs_get_sbi();
+	struct layout_rat_entry *entry = sbi ? layout_get_rat_entry(sbi, slot) : NULL;
+	if (!entry) {
+		len = sysfs_emit(buf, "No filesystem mounted\n");
+	} else {
+		union layout_rat_hot_copy hot;
+		cxl_get_layout_rat_hot(&hot, &entry->hot);
+		struct region_extent extents[LAYOUT_MAX_EXTENTS];
+		const s32 count =
+			layout_rat_state_is_standing(hot.local.state) ? region_read_extents(sbi, slot, &hot, extents) : 0;
+		for (s32 piece = 0; piece < count; piece++)
+			len += sysfs_emit_at(buf, len, "0x%llx\t%llu\n", extents[piece].offset, extents[piece].length);
+	}
+	mutex_unlock(&sysfs_lock);
+	return len;
+}
+
+static const struct attribute_group extent_slot_attr_group = {
+	.name = "extents",
+	.attrs = extent_slot_attr_ptrs,
+};
+
 static void region_name_rat_slots(void)
 {
 	for (u32 slot = 0; slot < LAYOUT_MAX_RAT_ENTRIES; slot++) {
@@ -179,8 +226,14 @@ static void region_name_rat_slots(void)
 		rat_slot_attrs[slot].attr.mode = 0444;
 		rat_slot_attrs[slot].show = rat_slot_show;
 		rat_slot_attr_ptrs[slot] = &rat_slot_attrs[slot].attr;
+
+		extent_slot_attrs[slot].attr.name = rat_slot_names[slot];
+		extent_slot_attrs[slot].attr.mode = 0444;
+		extent_slot_attrs[slot].show = extent_slot_show;
+		extent_slot_attr_ptrs[slot] = &extent_slot_attrs[slot].attr;
 	}
 	rat_slot_attr_ptrs[LAYOUT_MAX_RAT_ENTRIES] = NULL;
+	extent_slot_attr_ptrs[LAYOUT_MAX_RAT_ENTRIES] = NULL;
 }
 
 s32 region_create_sysfs_attrs(struct kobject *kobj)
@@ -192,12 +245,22 @@ s32 region_create_sysfs_attrs(struct kobject *kobj)
 	region_name_rat_slots();
 	ret = sysfs_create_group(kobj, &rat_slot_attr_group);
 	if (ret)
-		sysfs_remove_group(kobj, &region_attr_group);
+		goto out_region;
+	ret = sysfs_create_group(kobj, &extent_slot_attr_group);
+	if (ret)
+		goto out_rat;
+	return 0;
+
+out_rat:
+	sysfs_remove_group(kobj, &rat_slot_attr_group);
+out_region:
+	sysfs_remove_group(kobj, &region_attr_group);
 	return ret;
 }
 
 void region_delete_sysfs_attrs(struct kobject *kobj)
 {
+	sysfs_remove_group(kobj, &extent_slot_attr_group);
 	sysfs_remove_group(kobj, &rat_slot_attr_group);
 	sysfs_remove_group(kobj, &region_attr_group);
 }

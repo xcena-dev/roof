@@ -155,6 +155,10 @@ set_tests_properties(test_unlink_race PROPERTIES RUN_SERIAL ON)
 fs_add_case(test_gc_zero_extent onenode)
 set_tests_properties(test_gc_zero_extent PROPERTIES RUN_SERIAL ON)
 
+# Fills the write-back pool for its whole run, so any placement beside it answers ENOSPC.
+fs_add_case(test_paged_extents onenode)
+set_tests_properties(test_paged_extents PROPERTIES RUN_SERIAL ON)
+
 fs_add_case(test_unmount_drain onenode root)
 
 # Holds this node's drain closed for over a second, and any other prepare in that time is refused.
@@ -219,6 +223,15 @@ target_link_libraries(chaos_mapper PRIVATE fs-testing)
 target_include_directories(chaos_mapper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
 target_compile_options(chaos_mapper PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
+# Not a case: rat_summary_crash runs it to hold a fragmented pool on the surviving node while the
+# other one dies placing into it.
+add_executable(pool_hold pool_hold.cpp)
+target_link_libraries(pool_hold PRIVATE fs-testing)
+target_include_directories(pool_hold PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
+target_compile_options(pool_hold PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
+
 # Measures rather than asserts, so it is built and not registered. Its own directory carries what
 # drives it.
 add_subdirectory(measurement)
@@ -229,8 +242,8 @@ add_subdirectory(measurement)
 add_test(NAME bootstrap_chaos COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/bootstrap_chaos.sh)
 set_tests_properties(bootstrap_chaos PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
 
-# Kills one node's daemon and remounts that node four times over, on the host's own mounts. Needs
-# root and a module with CONFIG_FS_TEST_KNOBS.
+# Kills one node's daemon and remounts that node after each death, on the host's own mounts. Needs
+# root, a module with CONFIG_FS_TEST_KNOBS and pool_hold built.
 add_test(NAME rat_summary_crash COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/rat_summary_crash.sh)
 set_tests_properties(rat_summary_crash PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
 

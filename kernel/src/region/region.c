@@ -28,19 +28,14 @@
  * RAT (Region Allocation Table) management
  * ============================================================================ */
 
-s32 region_alloc_scratch(struct fs_sb_info *sbi)
+struct region_span *region_alloc_spans(void)
 {
-	sbi->span_scratch = kmalloc_array(LAYOUT_MAX_RAT_ENTRIES, sizeof(*sbi->span_scratch), GFP_KERNEL);
-	sbi->span_count = 0;
-	/* Odd, so it matches no quiet count and the first search reads the entries. */
-	sbi->span_placements = ~0ULL;
-	return sbi->span_scratch ? 0 : -ENOMEM;
+	return kmalloc_array(LAYOUT_MAX_RAT_ENTRIES * LAYOUT_MAX_EXTENTS, sizeof(struct region_span), GFP_KERNEL);
 }
 
-void region_free_scratch(struct fs_sb_info *sbi)
+void region_free_spans(struct region_span *spans)
 {
-	kfree(sbi->span_scratch);
-	sbi->span_scratch = NULL;
+	kfree(spans);
 }
 
 s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out)
@@ -66,13 +61,17 @@ s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out)
 
 		out->entries++;
 
-		if (hot.local.phys_offset < sbi->uc_start)
+		/* Every piece sits in the first one's pool. The lock region sits in neither. */
+		struct region_extent extents[LAYOUT_MAX_EXTENTS];
+		const s32 count = region_read_extents(sbi, index, &hot, extents);
+		if (count <= 0 || extents[0].offset < sbi->uc_start)
 			continue;
 
-		if (hot.local.phys_offset < sbi->wb_start)
-			out->uc_used += hot.local.size;
+		const u64 taken = region_sum_extents(extents, (u32)count);
+		if (extents[0].offset < sbi->wb_start)
+			out->uc_used += taken;
 		else
-			out->wb_used += hot.local.size;
+			out->wb_used += taken;
 	}
 
 	return 0;
@@ -118,32 +117,94 @@ static void region_get_pool_bounds(struct fs_sb_info *sbi, bool uncached, u64 *s
 	*end = uncached ? sbi->wb_start : sbi->total_size;
 }
 
-/* Sorted by offset, so the gap walk below is one pass. */
-static void region_insert_span(struct fs_sb_info *sbi, u64 offset, u64 end)
+/* A mount maps one device, and a region's pool is judged off its first piece alone. */
+static bool region_check_extents(struct fs_sb_info *sbi, const struct region_extent *extents, u32 count)
 {
-	struct region_span *spans = sbi->span_scratch;
-	u32 at = sbi->span_count;
+	const bool uncached = layout_check_meta_offset(sbi, extents[0].offset);
+	for (u32 idx = 0; idx < count; idx++) {
+		const struct region_extent *extent = &extents[idx];
+		if (extent->device_id != 0)
+			return false;
+		if (extent->offset == 0 || extent->length == 0 || !layout_is_valid_range(sbi, extent->offset, extent->length))
+			return false;
+		/* A write-back piece starts on the placing node's physical granule boundary, which a peer
+		 * may map elsewhere, so its start is held to a page only. */
+		if (!IS_ALIGNED(extent->offset, uncached ? sbi->granule : PAGE_SIZE) ||
+		    !IS_ALIGNED(extent->length, sbi->granule))
+			return false;
+		if (layout_check_meta_offset(sbi, extent->offset) != uncached)
+			return false;
+	}
+	return true;
+}
+
+s32 region_read_extents(struct fs_sb_info *sbi, u32 rat_entry_id, const union layout_rat_hot_copy *hot,
+			struct region_extent *out)
+{
+	const u32 count = hot->local.extent_count;
+	if (count == 0)
+		return 0;
+	if (count > LAYOUT_MAX_EXTENTS)
+		return -EIO;
+
+	/* The lock region's place is fixed and off any granule boundary. */
+	if (hot->local.region_type == LAYOUT_REGION_LOCK) {
+		out[0].offset = LAYOUT_LOCK_REGION_OFFSET;
+		out[0].length = LAYOUT_LOCK_REGION_SIZE;
+		out[0].device_id = 0;
+		return 1;
+	}
+
+	struct layout_rat_entry *entry = layout_get_rat_entry(sbi, rat_entry_id);
+	if (!entry)
+		return -EIO;
+	union layout_rat_extent_copy copy;
+	cxl_get_layout_rat_extent(&copy, &entry->extents);
+	for (u32 piece = 0; piece < count; piece++) {
+		out[piece].offset = copy.local.offset[piece];
+		out[piece].length = (u64)copy.local.granules[piece] * sbi->granule;
+		out[piece].device_id = copy.local.device_id[piece];
+	}
+
+	return region_check_extents(sbi, out, count) ? (s32)count : -EIO;
+}
+
+struct region_pool {
+	struct region_span *spans;
+	u32 count;
+	u64 start;
+	u64 end;
+	u64 granule;
+	/* The device's physical base for the write-back pool, where a huge entry needs a physical granule
+	 * boundary and the device need not sit on one. Zero for the uncached pool. */
+	u64 align_base;
+};
+
+/* Sorted by offset, so the gap walk below is one pass. */
+static void region_insert_span(struct region_pool *pool, u64 offset, u64 end)
+{
+	struct region_span *spans = pool->spans;
+	u32 at = pool->count;
 	while (at > 0 && spans[at - 1].offset > offset) {
 		spans[at] = spans[at - 1];
 		at--;
 	}
 	spans[at].offset = offset;
 	spans[at].end = end;
-	sbi->span_count++;
+	pool->count++;
 }
 
-/* Rebuild the mount's extent list for @uncached's pool from the entries @map marks taken, and stamp
- * it with @map's placement count. @map was read before the entries, and a placement steps the count
- * after its write, so a list whose count still reads current missed nothing. */
-static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const union layout_rat_map_copy *map)
+/* Read afresh by every placement, since another node may have placed or freed a region since this
+ * node last looked. */
+static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const union layout_rat_map_copy *map,
+				struct region_pool *pool)
 {
-	u64 regions_start;
-	u64 regions_end;
-	region_get_pool_bounds(sbi, uncached, &regions_start, &regions_end);
-
-	sbi->span_count = 0;
-	sbi->span_uncached = uncached;
-	sbi->span_placements = map->local.placements;
+	region_get_pool_bounds(sbi, uncached, &pool->start, &pool->end);
+	pool->granule = sbi->granule;
+	pool->align_base = uncached ? 0 : sbi->phys_base;
+	pool->count = 0;
+	const u64 regions_start = pool->start;
+	const u64 regions_end = pool->end;
 
 	/* Every entry while the summary is not trusted, since a taken bit a device formatted
 	 * before the summary existed never had set would hide a standing extent. */
@@ -159,44 +220,23 @@ static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const uni
 		if (!layout_rat_state_is_standing(hot.local.state))
 			continue;
 
-		const u64 entry_offset = hot.local.phys_offset;
-		const u64 entry_size = hot.local.size;
-		if (entry_offset == 0 || entry_size == 0)
-			continue;
+		struct region_extent extents[LAYOUT_MAX_EXTENTS];
+		const s32 count = region_read_extents(sbi, idx, &hot, extents);
+		for (s32 piece = 0; piece < count; piece++) {
+			const u64 piece_offset = extents[piece].offset;
+			const u64 piece_length = extents[piece].length;
+			if (piece_length > sbi->total_size || piece_offset > sbi->total_size - piece_length)
+				continue;
+			const u64 piece_end = piece_offset + piece_length;
 
-		/* Skip corrupted entries (overflow protection) */
-		if (entry_size > sbi->total_size || entry_offset > sbi->total_size - entry_size)
-			continue;
+			/* The other pool's, and no candidate here can reach it. */
+			if (piece_end <= regions_start || piece_offset >= regions_end)
+				continue;
 
-		/* The other pool's, and no candidate here can reach it. */
-		if (entry_offset + entry_size <= regions_start || entry_offset >= regions_end)
-			continue;
-
-		region_insert_span(sbi, entry_offset, entry_offset + entry_size);
+			region_insert_span(pool, piece_offset, piece_end);
+		}
 	}
 	return 0;
-}
-
-/* True when the list is @uncached's pool as of @map, and no placement is in flight: the count is
- * odd from a placer's first step to its last, and a list built across one may have missed it. */
-static bool region_spans_are_current(const struct fs_sb_info *sbi, bool uncached,
-				     const union layout_rat_map_copy *map)
-{
-	return sbi->rat_map_trusted &&
-	       sbi->span_uncached == uncached &&
-	       sbi->span_placements == map->local.placements &&
-	       (map->local.placements & 1) == 0;
-}
-
-void region_survey_space(struct fs_sb_info *sbi, bool uncached)
-{
-	if (!layout_get_rat(sbi) || !sbi->span_scratch)
-		return;
-
-	union layout_rat_map_copy map;
-	region_read_map(sbi, &map);
-	if (!region_spans_are_current(sbi, uncached, &map))
-		region_collect_spans(sbi, uncached, &map);
 }
 
 /* How many slots @have and @want mark differently. */
@@ -269,40 +309,118 @@ s32 region_repair_map(struct fs_sb_info *sbi)
 	return moves + (odd ? 1 : 0);
 }
 
-/* The first offset at or past @offset a region may start at. A write-back region starts on a
- * physical granule boundary, since a huge page entry needs one and the device need not sit on it. */
-static u64 region_align_candidate(const struct fs_sb_info *sbi, bool uncached, u64 offset)
+/* The first offset at or past @offset a piece may start at. */
+static u64 region_align_candidate(const struct region_pool *pool, u64 offset)
 {
-	if (uncached)
-		return layout_align_up(offset, sbi->granule);
-	return layout_align_up(sbi->phys_base + offset, sbi->granule) - sbi->phys_base;
+	return layout_align_up(pool->align_base + offset, pool->granule) - pool->align_base;
+}
+
+/* The last offset at or before @limit a piece may end at. */
+static u64 region_align_limit(const struct region_pool *pool, u64 limit)
+{
+	return ALIGN_DOWN(pool->align_base + limit, pool->granule) - pool->align_base;
 }
 
 /* The first gap of @size in the sorted list, or -ENOSPC. */
-static s32 region_pick_gap(struct fs_sb_info *sbi, bool uncached, u64 size, u64 *out_offset)
+static s32 region_pick_gap(const struct region_pool *pool, u64 size, u64 *out_offset)
 {
-	u64 regions_start;
-	u64 regions_end;
-	region_get_pool_bounds(sbi, uncached, &regions_start, &regions_end);
-
-	const struct region_span *spans = sbi->span_scratch;
-	u64 candidate = region_align_candidate(sbi, uncached, regions_start);
-	for (u32 idx = 0; idx < sbi->span_count; idx++) {
+	const struct region_span *spans = pool->spans;
+	u64 candidate = region_align_candidate(pool, pool->start);
+	for (u32 idx = 0; idx < pool->count; idx++) {
 		if (candidate + size <= spans[idx].offset) {
 			*out_offset = candidate;
 			return 0;
 		}
 		if (spans[idx].end > candidate)
-			candidate = region_align_candidate(sbi, uncached, spans[idx].end);
+			candidate = region_align_candidate(pool, spans[idx].end);
 	}
 
-	if (candidate + size <= regions_end) {
+	if (candidate + size <= pool->end) {
 		*out_offset = candidate;
 		return 0;
 	}
 
-	pr_err("no contiguous space for size %llu in [0x%llx, 0x%llx)\n", size, regions_start, regions_end);
+	pr_err("no contiguous space for size %llu in [0x%llx, 0x%llx)\n", size, pool->start, pool->end);
 	return -ENOSPC;
+}
+
+static bool region_is_gap_taken(u64 offset, const struct region_extent *taken, u32 count)
+{
+	for (u32 idx = 0; idx < count; idx++) {
+		if (taken[idx].offset == offset)
+			return true;
+	}
+	return false;
+}
+
+/* A zero length when no gap of @need bytes is left. */
+static struct region_extent region_find_gap(const struct region_pool *pool, u64 need, bool largest,
+					    const struct region_extent *taken, u32 taken_count)
+{
+	const struct region_span *spans = pool->spans;
+	struct region_extent best = { 0 };
+	u64 candidate = region_align_candidate(pool, pool->start);
+	for (u32 idx = 0; idx <= pool->count; idx++) {
+		const u64 limit = idx < pool->count ? spans[idx].offset : pool->end;
+		const u64 end = region_align_limit(pool, limit);
+		const u64 length = end > candidate ? end - candidate : 0;
+		const bool better = !best.length || (largest ? length >= best.length : length <= best.length);
+		if (length >= need && length > 0 && better && !region_is_gap_taken(candidate, taken, taken_count)) {
+			best.offset = candidate;
+			best.length = length;
+		}
+		if (idx < pool->count && spans[idx].end > candidate)
+			candidate = region_align_candidate(pool, spans[idx].end);
+	}
+	return best;
+}
+
+static s32 region_fill_gaps(const struct region_pool *pool, u64 size, bool largest_first,
+			    struct region_extent *out)
+{
+	u64 left = size;
+	for (u32 count = 0; count < LAYOUT_MAX_EXTENTS; count++) {
+		const struct region_extent fit = region_find_gap(pool, left, false, out, count);
+		if (fit.length) {
+			/* The high end, since a contiguous placement takes the low end of a gap. */
+			out[count].offset = fit.offset + fit.length - left;
+			out[count].length = left;
+			out[count].device_id = 0;
+			return (s32)count + 1;
+		}
+
+		const struct region_extent whole = region_find_gap(pool, 1, largest_first, out, count);
+		if (!whole.length || count + 1 == LAYOUT_MAX_EXTENTS)
+			return -ENOSPC;
+		out[count] = whole;
+		left -= whole.length;
+	}
+	return -ENOSPC;
+}
+
+/* Small gaps go first so the large ones stay for contiguous regions. The largest go first only when
+ * that runs out of pieces. */
+static s32 region_pick_gaps(const struct region_pool *pool, u64 size, struct region_extent *out)
+{
+	s32 count = region_fill_gaps(pool, size, false, out);
+	if (count < 0)
+		count = region_fill_gaps(pool, size, true, out);
+	if (count < 0)
+		pr_err("no space for paged size %llu in %u pieces\n", size, (u32)LAYOUT_MAX_EXTENTS);
+	return count;
+}
+
+static void region_write_extents(struct fs_sb_info *sbi, struct layout_rat_entry *entry,
+				 const struct region_extent *extents, u32 count)
+{
+	union layout_rat_extent_copy copy;
+	memset(&copy.local, 0, sizeof(copy.local));
+	for (u32 piece = 0; piece < count; piece++) {
+		copy.local.offset[piece] = extents[piece].offset;
+		copy.local.granules[piece] = (u32)(extents[piece].length / sbi->granule);
+		copy.local.device_id[piece] = extents[piece].device_id;
+	}
+	cxl_set_layout_rat_extent(&entry->extents, &copy);
 }
 
 /*
@@ -320,8 +438,6 @@ static void region_clear_deleg_rows(struct layout_rat_entry *entry)
  * @sbi: superblock info
  * @name: filename
  * @name_len: filename length
- * @offset: physical offset
- * @size: region size
  *
  * Runs while the slot reads ALLOCATING, so no peer reads what these writes pass through. The name
  * and acl lines are written here, the acl with the calling task as owner and @identity as its group
@@ -329,7 +445,7 @@ static void region_clear_deleg_rows(struct layout_rat_entry *entry)
  * writes it once with ALLOCATED so the fields land together with the state.
  */
 static void region_fill_rat_entry(struct layout_rat_entry *entry, struct fs_sb_info *sbi, const char *name, u32 name_len,
-				  u64 offset, u64 size, umode_t mode, const struct fs_daemon_attest_response *identity,
+				  umode_t mode, const struct fs_daemon_attest_response *identity,
 				  union layout_rat_hot_copy *hot)
 {
 	region_clear_deleg_rows(entry);
@@ -343,8 +459,6 @@ static void region_fill_rat_entry(struct layout_rat_entry *entry, struct fs_sb_i
 	memset(&acl.local, 0, sizeof(acl.local));
 
 	u64 now = ktime_get_real_ns();
-	hot->local.phys_offset = offset;
-	hot->local.size = size;
 	hot->local.alloc_time = now;
 	hot->local.modified_at = now;
 	hot->local.uid = current_uid().val;
@@ -379,7 +493,7 @@ u32 region_find_free_rat_entry(struct fs_sb_info *sbi)
 /* Take slot @idx if it reads free. -EBUSY when it does not, which for a hint is a peer having
  * taken it since the caller looked. */
 static s32 region_claim_rat_entry(struct fs_sb_info *sbi, u32 idx, const char *name, u32 name_len,
-				  u64 offset, u64 size, umode_t mode, const struct fs_daemon_attest_response *identity)
+				  umode_t mode, const struct fs_daemon_attest_response *identity)
 {
 	struct layout_rat_entry *entry = layout_get_rat_entry(sbi, idx);
 	if (!entry)
@@ -398,18 +512,18 @@ static s32 region_claim_rat_entry(struct fs_sb_info *sbi, u32 idx, const char *n
 		return -EIO;
 
 	/* The other lines land while the slot reads ALLOCATING, which no reader accepts. */
-	region_fill_rat_entry(entry, sbi, name, name_len, offset, size, mode, identity, &hot);
+	region_fill_rat_entry(entry, sbi, name, name_len, mode, identity, &hot);
 
 	/* Publish: the hot line's fields and ALLOCATED in one write, so the read above and the
 	 * one write here are all the traffic this line sees. */
 	hot.local.state = LAYOUT_RAT_ENTRY_ALLOCATED;
 	cxl_set_layout_rat_hot(&entry->hot, &hot);
 
-	pr_debug("allocated RAT entry %u for '%s' at offset %llu size %llu\n", idx, name, offset, size);
+	pr_debug("allocated RAT entry %u for '%s'\n", idx, name);
 	return 0;
 }
 
-s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u64 offset, u32 hint, umode_t mode,
+s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u32 hint, umode_t mode,
 			   const struct fs_daemon_attest_response *identity, u32 *out_rat_entry_id)
 {
 	if (!sbi || !name || !out_rat_entry_id)
@@ -428,7 +542,7 @@ s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u
 	if (idx >= LAYOUT_MAX_RAT_ENTRIES || bits_has(map.local.taken, idx))
 		idx = bits_find_next_clear(map.local.taken, LAYOUT_MAX_RAT_ENTRIES, 0);
 	while (idx < LAYOUT_MAX_RAT_ENTRIES) {
-		s32 ret = region_claim_rat_entry(sbi, idx, name, name_len, offset, size, mode, identity);
+		s32 ret = region_claim_rat_entry(sbi, idx, name, name_len, mode, identity);
 		if (ret == 0)
 			break;
 		if (ret != -EBUSY)
@@ -442,7 +556,7 @@ s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u
 	/* Every bit set: a slot a crash left marked while free is found by the entries themselves. */
 	if (idx >= LAYOUT_MAX_RAT_ENTRIES) {
 		for (idx = 0; idx < LAYOUT_MAX_RAT_ENTRIES; idx++) {
-			s32 ret = region_claim_rat_entry(sbi, idx, name, name_len, offset, size, mode, identity);
+			s32 ret = region_claim_rat_entry(sbi, idx, name, name_len, mode, identity);
 			if (ret == 0)
 				break;
 			if (ret != -EBUSY)
@@ -487,7 +601,7 @@ bool region_free_rat_entry(struct fs_sb_info *sbi, struct layout_rat_entry *entr
 
 	/* An extent going away is a placement change, so the count goes odd before the entry
 	 * changes and even after, the way a placement steps it. */
-	const bool placed = hot.local.phys_offset != 0;
+	const bool placed = hot.local.extent_count != 0;
 	union layout_rat_map_copy map;
 	region_read_map(sbi, &map);
 	u64 placements = map.local.placements;
@@ -538,26 +652,23 @@ bool region_free_rat_entry(struct fs_sb_info *sbi, struct layout_rat_entry *entr
  * region_init - allocate physical space and initialize region header
  * @sbi: superblock info
  * @rat_entry_id: RAT entry ID (must be pre-allocated in reservation mode)
- * @data_size: user-requested data size in bytes
- *
- * Called from inode_set_attr() when ftruncate sets file size for the first time.
- * Finds contiguous space, initializes region header with name table,
- * and updates the RAT entry with physical offset/size.
- *
- * Region layout (v2: header in pool, data starts at phys_offset):
- *   [Data area (data_size, 2MB aligned)]
- *   Total region_size = align_2MB(data_size)
+ * @data_size: user-requested data size in bytes, rounded up to whole granules
+ * @opts: the pool, and whether the region may lie in pieces
+ * @spans: from region_alloc_spans
  *
  * Returns 0 on success, negative error code on failure.
  *
  * PRECONDITION: the caller holds the metadata lock. The gap search reads the standing extents
  * and then writes the winner, so two callers would place overlapping regions.
  */
-s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size, bool uncached)
+s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
+		       const struct region_placement_opts *opts, struct region_span *spans)
 {
 	struct layout_rat_entry *entry = layout_get_rat_entry(sbi, rat_entry_id);
-	if (!entry || data_size == 0)
+	if (!entry || data_size == 0 || !spans)
 		return -EINVAL;
+	const bool uncached = opts->uncached;
+	const bool paged = opts->paged;
 
 	/* Reject obviously oversized requests */
 	if (data_size > sbi->total_size)
@@ -585,48 +696,67 @@ s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size, 
 		ret = -EINVAL;
 		goto out;
 	}
-	if (hot.local.phys_offset != 0) {
+	if (hot.local.extent_count != 0) {
 		ret = -EEXIST; /* Already initialized */
 		goto out;
 	}
 
-	/* The list a survey left is used as it stands when the placement count says nothing moved
-	 * since; otherwise it is read again here, under the turn, where nothing can move. */
-	if (!sbi->span_scratch) {
-		ret = -EINVAL;
-		goto out;
-	}
+	/* Read here, under the turn, where nothing can move. */
 	union layout_rat_map_copy map;
 	region_read_map(sbi, &map);
-	if (!region_spans_are_current(sbi, uncached, &map)) {
-		ret = region_collect_spans(sbi, uncached, &map);
-		if (ret)
-			goto out;
-	}
-
-	u64 region_offset;
-	ret = region_pick_gap(sbi, uncached, region_size, &region_offset);
+	struct region_pool pool = { .spans = spans };
+	ret = region_collect_spans(sbi, uncached, &map, &pool);
 	if (ret)
 		goto out;
 
-	/* Validate region fits in DAX mapping */
-	if (!layout_is_valid_range(sbi, region_offset, region_size)) {
-		pr_err("region_init: region 0x%llx+%llu exceeds DAX mapping\n", region_offset, region_size);
-		ret = -ENOSPC;
+	/* The uncached pool stays contiguous, since mmap maps a region there with one remap. */
+	if (paged && uncached) {
+		ret = -EINVAL;
 		goto out;
+	}
+
+	struct region_extent extents[LAYOUT_MAX_EXTENTS];
+	s32 count = 1;
+	if (paged) {
+		count = region_pick_gaps(&pool, region_size, extents);
+		if (count < 0) {
+			ret = count;
+			goto out;
+		}
+	} else {
+		ret = region_pick_gap(&pool, region_size, &extents[0].offset);
+		if (ret)
+			goto out;
+		extents[0].length = region_size;
+		extents[0].device_id = 0;
+	}
+
+	/* Validate region fits in DAX mapping */
+	for (s32 piece = 0; piece < count; piece++) {
+		if (!layout_is_valid_range(sbi, extents[piece].offset, extents[piece].length)) {
+			pr_err("region_init: region 0x%llx+%llu exceeds DAX mapping\n", extents[piece].offset,
+			       extents[piece].length);
+			ret = -ENOSPC;
+			goto out;
+		}
 	}
 
 	/* Odd while the extent lands: a peer's list built across this write is not one to trust. */
 	const u64 placements = region_step_placements_odd(map.local.placements) + 1;
 	region_write_map_stepped(sbi, &map, placements - 1, LAYOUT_MAX_RAT_ENTRIES);
-	if (test_crash_here(sbi, TEST_CRASH_PLACE_BEFORE_EXTENT)) {
+
+	/* The extent line before the hot line, which is what makes it read. A crash between leaves a
+	 * line no hot line counts, and its pieces free. */
+	region_write_extents(sbi, entry, extents, (u32)count);
+	if (test_crash_here(sbi, TEST_CRASH_PLACE_BEFORE_COMMIT)) {
 		ret = -EIO;
 		goto out;
 	}
 
-	/* Commit: write phys_offset + size to RAT entry */
-	hot.local.phys_offset = region_offset;
-	hot.local.size = region_size;
+	/* Commit: the piece count is what makes the extent line read. */
+	hot.local.placement = paged ? LAYOUT_PLACEMENT_PAGED : LAYOUT_PLACEMENT_CONTIGUOUS;
+	hot.local.extent_count = (u16)count;
+	hot.local.modified_at = ktime_get_real_ns();
 	cxl_set_layout_rat_hot(&entry->hot, &hot);
 
 	if (test_crash_here(sbi, TEST_CRASH_PLACE_BEFORE_EVEN)) {
@@ -636,18 +766,14 @@ s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size, 
 
 	region_write_map_stepped(sbi, &map, placements, LAYOUT_MAX_RAT_ENTRIES);
 
-	/* The list now carries this extent too, so the next placement on this node reads no entry. */
-	region_insert_span(sbi, region_offset, region_offset + region_size);
-	sbi->span_placements = placements;
-
 out:
 	if (ret) {
 		pr_err("region_init failed for rat_entry=%u (err=%d)\n", rat_entry_id, ret);
 		return ret;
 	}
 
-	pr_debug("region_init rat=%u region_offset=0x%llx region_size=%llu data_size=%llu\n",
-		 rat_entry_id, region_offset, region_size, data_size);
+	pr_debug("region_init rat=%u first=0x%llx pieces=%d region_size=%llu data_size=%llu\n",
+		 rat_entry_id, extents[0].offset, count, region_size, data_size);
 
 	return 0;
 }

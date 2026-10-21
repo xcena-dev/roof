@@ -14,7 +14,7 @@
  * Every offset up to the lock region is computed by enum layout_offset_table below.
  *
  *   Superblock → Bootstrap slots → Shard table → Bucket lines
- *     → Index line pool → RAT → (2MB align) → lock region → regions
+ *     → Index line pool → RAT → refs → (2MB align) → lock region → regions
  *
  * The regions split into two pools, uncached below the boundary and write-back above it. That
  * boundary and the granule they are handed out in come off the superblock, so they are runtime

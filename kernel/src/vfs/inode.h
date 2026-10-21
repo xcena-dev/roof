@@ -15,18 +15,23 @@
 
 #include "compat.h"
 #include "core.h"
+#include "layout/rat.h"
+#include "region/region.h"
 
 struct fs_inode_info {
 	u32 region_id; /* Region where data is stored (= RAT entry ID) */
 	u32 rat_entry_id;
-	u64 region_offset;
 	u32 owner_node_id;
 	u32 owner_pid;
 	u64 owner_birth_time;
-	u64 data_phys_offset; /* Cached: region phys_offset (= data start) */
+	/* The placement in file order, 0 pieces until it is placed. A placed region is never moved,
+	 * so the copy holds for as long as the slot holds this file. */
+	u32 extent_count;
+	struct region_extent extents[LAYOUT_MAX_EXTENTS];
 	/* Which pool the placement is to take, set while the file has no region and read once by
-	 * it. Once placed, the offset is what says which pool holds the region. */
+	 * it. Once placed, the first piece's offset is what says which pool holds the region. */
 	bool want_uncached;
+	bool want_paged;
 	struct inode vfs_inode; /* VFS inode (must be last!) */
 };
 
@@ -40,12 +45,12 @@ static inline void fs_init_inode_info(struct fs_inode_info *xi)
 {
 	xi->region_id = 0;
 	xi->rat_entry_id = 0;
-	xi->region_offset = 0;
 	xi->owner_node_id = 0;
 	xi->owner_pid = 0;
 	xi->owner_birth_time = 0;
-	xi->data_phys_offset = 0;
+	xi->extent_count = 0;
 	xi->want_uncached = false;
+	xi->want_paged = false;
 }
 
 /* One chain, walked once: an inode names a superblock, and each of those names what this
@@ -72,6 +77,9 @@ void inode_evict(struct inode *inode);
 /* Rereads the inode's fields from its RAT entry. An inode is keyed on its slot, so a caller that
  * has just pinned the slot with a reference reads here what that slot holds now. */
 void inode_read_entry(struct inode *inode);
+
+/* A placement that does not fit the device leaves @xi unplaced. */
+void inode_load_extents(struct fs_sb_info *sbi, struct fs_inode_info *xi, const union layout_rat_hot_copy *hot);
 
 extern const struct inode_operations inode_iops;
 extern const struct inode_operations dir_iops;

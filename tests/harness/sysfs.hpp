@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -20,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -171,6 +173,68 @@ struct RegionInfo_t
 {
     auto table = readRegionInfo();
     return table ? std::move(table->rows) : std::vector<RegionRow_t>{};
+}
+
+// The whole of @text as one number in @base, or nullopt. A hex value may carry its 0x.
+[[nodiscard]] inline std::optional<std::uint64_t> parseUnsigned(std::string_view text, std::int32_t base = 10)
+{
+    constexpr std::int32_t Hex = 16;
+    if (base == Hex && text.rfind("0x", 0) == 0)
+    {
+        text.remove_prefix(2);
+    }
+    std::uint64_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, base);
+    if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+// One piece of a region, as extents/<slot> shows it.
+struct Piece_t
+{
+    std::uint64_t offset{0};
+    std::uint64_t length{0};
+
+    [[nodiscard]] bool operator==(const Piece_t& other) const noexcept
+    {
+        return offset == other.offset && length == other.length;
+    }
+};
+
+[[nodiscard]] inline std::string extentsPath(std::int64_t entry)
+{
+    return "/sys/fs/" FS_NAME_STR "/extents/" + std::to_string(entry);
+}
+
+// The pieces of the region named @name in file order, or none when no row carries the name.
+[[nodiscard]] inline std::vector<Piece_t> readPiecesOf(const std::string& name)
+{
+    constexpr std::int32_t Hex = 16;
+    std::vector<Piece_t> pieces;
+    for (const auto& row : readRegionRows())
+    {
+        if (row.name != name)
+        {
+            continue;
+        }
+        std::ifstream source{extentsPath(row.entry)};
+        std::string line;
+        while (std::getline(source, line))
+        {
+            const auto fields = splitOnTabs(line);
+            const auto offset = fields.size() == 2 ? parseUnsigned(fields[0], Hex) : std::nullopt;
+            const auto length = fields.size() == 2 ? parseUnsigned(fields[1]) : std::nullopt;
+            if (offset && length)
+            {
+                pieces.push_back({*offset, *length});
+            }
+        }
+        break;
+    }
+    return pieces;
 }
 
 // Where the two region pools sit and what is left in each. A pool row reads

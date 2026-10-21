@@ -39,8 +39,7 @@ static void format_write_lock_entry(struct fs_sb_info *sbi)
 
 	const u64 stamp = ktime_get_real_ns();
 	hot.local.region_type = LAYOUT_REGION_LOCK;
-	hot.local.phys_offset = LAYOUT_LOCK_REGION_OFFSET;
-	hot.local.size = LAYOUT_LOCK_REGION_SIZE;
+	hot.local.extent_count = 1;
 	hot.local.alloc_time = stamp;
 	hot.local.modified_at = stamp;
 	hot.local.mode = 0666;

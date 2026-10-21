@@ -349,18 +349,22 @@ static bool gc_has_dead_owner(struct layout_rat_entry *entry)
  */
 static void gc_clear_extent(struct fs_sb_info *sbi, struct layout_rat_entry *entry)
 {
-	union layout_rat_hot_copy hot;
-	cxl_get_layout_rat_hot(&hot, &entry->hot);
-	if (hot.local.phys_offset == 0 ||
-	    hot.local.size == 0 ||
-	    !layout_is_valid_region_addr(sbi, hot.local.phys_offset, hot.local.size))
+	struct layout_rat *rat = layout_get_rat(sbi);
+	if (!rat)
 		return;
 
-	void *base = layout_get_file_data_ptr(sbi, hot.local.phys_offset, 0);
-	cxl_zero_cachelines(base, hot.local.size);
-	/* The write-back pool's lines sit in this node's cache after the byte fallback. */
-	if (!layout_check_meta_offset(sbi, hot.local.phys_offset))
-		CXL_WMB_CACHED(base, hot.local.size);
+	union layout_rat_hot_copy hot;
+	cxl_get_layout_rat_hot(&hot, &entry->hot);
+
+	struct region_extent extents[LAYOUT_MAX_EXTENTS];
+	const s32 count = region_read_extents(sbi, (u32)(entry - rat->entries), &hot, extents);
+	for (s32 piece = 0; piece < count; piece++) {
+		void *base = layout_get_file_data_ptr(sbi, extents[piece].offset);
+		cxl_zero_cachelines(base, extents[piece].length);
+		/* The write-back pool's lines sit in this node's cache after the byte fallback. */
+		if (!layout_check_meta_offset(sbi, extents[piece].offset))
+			CXL_WMB_CACHED(base, extents[piece].length);
+	}
 }
 
 /*

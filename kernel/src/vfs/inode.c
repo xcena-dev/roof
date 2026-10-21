@@ -6,7 +6,7 @@
  * Maps index entries to VFS inodes and handles metadata updates.
  *
  * Two-phase model:
- *   inode_iget:    reads RAT entry, sets data_phys_offset if region initialized
+ *   inode_iget:    reads RAT entry, and the pieces with the size once the region is placed
  *   inode_set_attr: ftruncate triggers region_init (first-time only, WORM)
  */
 
@@ -58,8 +58,7 @@ bool inode_open_ctx(struct inode_ctx *ctx, struct inode *inode)
  * @xi: inode info to populate
  * @rat_entry_id: RAT entry ID to resolve
  *
- * Reads ownership, region_offset, and data_phys_offset from RAT entry.
- * v2: data starts directly at phys_offset (no header in region).
+ * Reads ownership from the RAT entry, and the pieces with the file's size.
  *
  * Return: 0 on success, -ENOENT if the RAT entry holds no region, -EINVAL if missing
  */
@@ -76,9 +75,6 @@ static s32 inode_resolve_rat_entry(struct fs_sb_info *sbi, struct fs_inode_info 
 	if (!layout_rat_state_is_standing(hot.local.state))
 		return -ENOENT;
 
-	u64 phys_offset = hot.local.phys_offset;
-	xi->region_offset = phys_offset;
-
 	union layout_rat_acl_copy acl;
 
 	cxl_get_layout_rat_acl(&acl, &rat_entry->acl);
@@ -86,18 +82,26 @@ static s32 inode_resolve_rat_entry(struct fs_sb_info *sbi, struct fs_inode_info 
 	xi->owner_pid = acl.local.owner_pid;
 	xi->owner_birth_time = acl.local.owner_birth_time;
 
-	if (layout_is_valid_phys_offset(sbi, phys_offset))
-		xi->data_phys_offset = phys_offset;
-	else
-		xi->data_phys_offset = 0;
-
+	inode_load_extents(sbi, xi, &hot);
 	return 0;
+}
+
+void inode_load_extents(struct fs_sb_info *sbi, struct fs_inode_info *xi, const union layout_rat_hot_copy *hot)
+{
+	const s32 count = region_read_extents(sbi, xi->rat_entry_id, hot, xi->extents);
+	xi->extent_count = count > 0 ? (u32)count : 0;
+
+	/* The pieces are whole granules, and the file is as long as they are together. */
+	struct inode *inode = &xi->vfs_inode;
+	const u64 size = region_sum_extents(xi->extents, xi->extent_count);
+	i_size_write(inode, size);
+	inode->i_blocks = (size + SECTOR_SIZE - 1) >> SECTOR_SHIFT;
 }
 
 /*
  * inode_fill_from_entry - populate VFS inode fields from the RAT entry
  * @inode: target inode
- * @rat_e: RAT entry (uid, gid, mode, size, modified_at)
+ * @rat_e: RAT entry
  *
  * Every field a peer node can change, so a cached inode refreshed through here
  * follows that node's writes. modified_at is the last size decision and not the
@@ -115,8 +119,6 @@ static void inode_fill_from_entry(struct inode *inode, struct layout_rat_entry *
 	inode->i_mode = S_IFREG | copy.local.mode;
 	inode->i_uid = make_kuid(&init_user_ns, copy.local.uid);
 	inode->i_gid = make_kgid(&init_user_ns, copy.local.gid);
-	inode->i_size = copy.local.size;
-	inode->i_blocks = (inode->i_size + SECTOR_SIZE - 1) >> SECTOR_SHIFT;
 	inode_set_mtime_to_ts(inode, stamp);
 	inode_set_ctime_to_ts(inode, stamp);
 	set_nlink(inode, 1);
@@ -141,8 +143,8 @@ static void inode_mark_dax(struct inode *inode)
  * a different file behind the same ino.
  *
  * Two-phase awareness:
- *   phys_offset > 0: region initialized, data_phys_offset = phys_offset
- *   phys_offset == 0: region not yet initialized (ftruncate pending)
+ *   extent_count > 0: region placed, the pieces and the size are read
+ *   extent_count == 0: region not yet placed (ftruncate pending)
  *
  * Return: inode pointer on success, ERR_PTR on error
  */
@@ -163,7 +165,7 @@ static struct inode *iget_by_region(struct super_block *sb, u32 region_id)
 		 * Already cached — refresh from CXL memory for cross-node
 		 * visibility.  When a RAT entry is reused (file deleted then
 		 * new file allocated to the same entry), the cached inode
-		 * carries stale data_phys_offset / owner fields.  Re-read
+		 * carries stale pieces / owner fields.  Re-read
 		 * everything that can change between uses of the same ino.
 		 */
 		struct layout_rat_entry *cached = layout_get_rat_entry(sbi, region_id);
@@ -188,11 +190,10 @@ static struct inode *iget_by_region(struct super_block *sb, u32 region_id)
 	}
 	if (ret == -EINVAL) {
 		/* Invalid RAT entry ID */
-		xi->region_offset = 0;
 		xi->owner_node_id = 0;
 		xi->owner_pid = 0;
 		xi->owner_birth_time = 0;
-		xi->data_phys_offset = 0;
+		xi->extent_count = 0;
 	}
 
 	struct layout_rat_entry *rat_e = layout_get_rat_entry(sbi, region_id);
@@ -314,35 +315,6 @@ struct inode *inode_new(struct super_block *sb, umode_t mode)
 	return inode;
 }
 
-/*
- * inode_sync_size - publish this file's size and mtime to its RAT entry.
- *
- * Only ftruncate reaches here, so the value is one this node just decided. Judged again under the
- * caller's lock, because region_free_rat_entry writes this same line.
- */
-static void inode_sync_size_locked(struct fs_sb_info *sbi, struct fs_inode_info *xi, loff_t size)
-{
-	struct layout_rat_entry *rat_e = layout_get_rat_entry(sbi, xi->rat_entry_id);
-	if (!rat_e)
-		return;
-
-	/* Judged under the caller's lock like the state below: its wait sleeps, and a fence that
-	 * landed meanwhile means this size belongs to whoever holds our node_id now. */
-	if (fs_is_fenced(sbi))
-		return;
-
-	union layout_rat_hot_copy hot;
-	cxl_get_layout_rat_hot(&hot, &rat_e->hot);
-
-	/* An unlink that ran since the resize has handed this slot back, and putting the copy above
-	 * back would revive it as a file with no name and no owner that nothing then reclaims. */
-	if (hot.local.state == LAYOUT_RAT_ENTRY_ALLOCATED) {
-		hot.local.size = size;
-		hot.local.modified_at = ktime_get_real_ns();
-		cxl_set_layout_rat_hot(&rat_e->hot, &hot);
-	}
-}
-
 /* ============================================================================
  * inode eviction
  * ============================================================================ */
@@ -379,20 +351,68 @@ static s32 inode_get_attr(COMPAT_IDMAP_PARAM_COMMA const struct path *path, stru
 
 	compat_fill_attr(COMPAT_IDMAP_ARG_COMMA request_mask, ctx.inode, stat);
 
-	if (ctx.inode->i_ino != FS_ROOT_INO) {
-		/* Read latest file_size from RAT — write to stat directly
-		 * to avoid i_size_write() without i_rwsem */
-		struct layout_rat_entry *rat_e = layout_get_rat_entry(ctx.sbi, ctx.xi->rat_entry_id);
-		if (rat_e) {
-			union layout_rat_hot_copy hot;
+	/* A placed region's size does not change, so only an unplaced copy can be behind: a peer may
+	 * have placed the region since, which the RAT says. */
+	if (ctx.inode->i_ino == FS_ROOT_INO || ctx.xi->extent_count != 0)
+		return 0;
 
-			cxl_get_layout_rat_hot(&hot, &rat_e->hot);
-			stat->size = hot.local.size;
-			stat->blocks = (hot.local.size + SECTOR_SIZE - 1) >> SECTOR_SHIFT;
-		}
+	struct layout_rat_entry *rat_e = layout_get_rat_entry(ctx.sbi, ctx.xi->rat_entry_id);
+	if (!rat_e)
+		return 0;
+	union layout_rat_hot_copy hot;
+	cxl_get_layout_rat_hot(&hot, &rat_e->hot);
+	if (hot.local.extent_count == 0)
+		return 0;
+
+	inode_lock(ctx.inode);
+	inode_load_extents(ctx.sbi, ctx.xi, &hot);
+	inode_unlock(ctx.inode);
+	stat->size = i_size_read(ctx.inode);
+	stat->blocks = ctx.inode->i_blocks;
+	return 0;
+}
+
+/* The span buffer is allocated before the lock, so the placement never waits on memory while it
+ * holds the turn. */
+static s32 inode_place_region(struct inode_ctx *ctx, u64 size)
+{
+	struct region_span *spans = region_alloc_spans();
+	if (!spans)
+		return -ENOMEM;
+
+	struct meta_lock lock;
+	s32 ret = meta_lock_begin(ctx->sbi, &lock, TEST_META_OP_PLACE);
+	if (ret)
+		goto out_free;
+	ret = meta_lock_finish(ctx->sbi, &lock);
+	if (ret)
+		goto out_free;
+
+	const struct region_placement_opts opts = { .uncached = ctx->xi->want_uncached, .paged = ctx->xi->want_paged };
+	ret = region_init_locked(ctx->sbi, ctx->xi->rat_entry_id, size, &opts, spans);
+	if (ret) {
+		pr_err("region_init failed for rat_entry %u: %d\n", ctx->xi->rat_entry_id, ret);
+		goto out_unlock;
 	}
 
-	return 0;
+	struct layout_rat_entry *rat_entry = layout_get_rat_entry(ctx->sbi, ctx->xi->rat_entry_id);
+	if (!rat_entry) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+	union layout_rat_hot_copy hot;
+	cxl_get_layout_rat_hot(&hot, &rat_entry->hot);
+	inode_load_extents(ctx->sbi, ctx->xi, &hot);
+
+	struct timespec64 now = current_time(ctx->inode);
+	inode_set_mtime_to_ts(ctx->inode, now);
+	inode_set_ctime_to_ts(ctx->inode, now);
+
+out_unlock:
+	meta_unlock(ctx->sbi, &lock);
+out_free:
+	region_free_spans(spans);
+	return ret;
 }
 
 /*
@@ -447,59 +467,12 @@ static s32 inode_set_attr(COMPAT_IDMAP_PARAM_COMMA struct dentry *dentry, struct
 		if (!(attr->ia_valid & ATTR_FILE))
 			return -EOPNOTSUPP;
 
-		/*
-		 * First-time size set: allocate physical region.
-		 * region_init finds contiguous space, initializes region header,
-		 * and updates RAT entry with phys_offset and size.
-		 */
-		/* One lock for the whole placement: the region and the size it publishes are one
-		 * change as a peer sees it, and half of it landing is a file a peer reads as empty. */
-		struct meta_lock lock;
-		ret = meta_lock_begin(ctx.sbi, &lock, TEST_META_OP_PLACE);
-		if (ret)
-			return ret;
-		/* The standing extents are read while the helper takes the turn. That read excludes
-		 * nobody, so the placement confirms it against the RAT's placement count once the
-		 * turn is held. */
-		region_survey_space(ctx.sbi, ctx.xi->want_uncached);
-		ret = meta_lock_finish(ctx.sbi, &lock);
+		ret = inode_place_region(&ctx, attr->ia_size);
 		if (ret)
 			return ret;
 
-		ret = region_init_locked(ctx.sbi, ctx.xi->rat_entry_id,
-					 attr->ia_size, ctx.xi->want_uncached);
-		if (ret) {
-			pr_err("region_init failed for rat_entry %u: %d\n", ctx.xi->rat_entry_id, ret);
-			meta_unlock(ctx.sbi, &lock);
-			return ret;
-		}
-
-		/* Update inode from initialized region */
-		struct layout_rat_entry *rat_entry = layout_get_rat_entry(ctx.sbi, ctx.xi->rat_entry_id);
-		if (!rat_entry) {
-			meta_unlock(ctx.sbi, &lock);
-			return -EIO;
-		}
-
-		union layout_rat_hot_copy hot;
-		cxl_get_layout_rat_hot(&hot, &rat_entry->hot);
-		/* v2: data starts directly at phys_offset */
-		ctx.xi->region_offset = hot.local.phys_offset;
-		ctx.xi->data_phys_offset = hot.local.phys_offset;
-
-		/* Set inode size */
-		truncate_setsize(ctx.inode, attr->ia_size);
-
-		struct timespec64 now = current_time(ctx.inode);
-		inode_set_mtime_to_ts(ctx.inode, now);
-		inode_set_ctime_to_ts(ctx.inode, now);
-
-		/* Publish the size here, which is the only place one is decided. There
-		 * is no writeback pass behind this: the RAT is the store. */
-		inode_sync_size_locked(ctx.sbi, ctx.xi, ctx.inode->i_size);
-		meta_unlock(ctx.sbi, &lock);
-
-		pr_debug("ftruncate rat=%u size=%lld slot_base=0x%llx\n", ctx.xi->rat_entry_id, ctx.inode->i_size, ctx.xi->data_phys_offset);
+		pr_debug("ftruncate rat=%u size=%lld first=0x%llx\n", ctx.xi->rat_entry_id, ctx.inode->i_size,
+			 ctx.xi->extents[0].offset);
 	}
 
 	return 0;

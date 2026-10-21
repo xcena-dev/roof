@@ -12,6 +12,7 @@
 
 struct fs_sb_info;
 struct layout_rat_entry;
+union layout_rat_hot_copy;
 
 /* One allocated extent, as the gap search sorts them. */
 struct region_span {
@@ -19,9 +20,34 @@ struct region_span {
 	u64 end;
 };
 
-/* The gap search runs under meta_lock, so its scratch is the mount's rather than the call's. */
-s32 region_alloc_scratch(struct fs_sb_info *sbi);
-void region_free_scratch(struct fs_sb_info *sbi);
+/* One piece of a region, in bytes from the start of device @device_id. */
+struct region_extent {
+	u64 offset;
+	u64 length;
+	u16 device_id;
+};
+
+/* @out holds LAYOUT_MAX_EXTENTS. Their number, 0 while unplaced, or -EIO when they do not fit the device. */
+s32 region_read_extents(struct fs_sb_info *sbi, u32 rat_entry_id, const union layout_rat_hot_copy *hot,
+			struct region_extent *out);
+
+/* For one placement, allocated before the lock is taken, so the placement never waits on memory
+ * while it holds the turn. */
+struct region_span *region_alloc_spans(void);
+void region_free_spans(struct region_span *spans);
+
+static inline u64 region_sum_extents(const struct region_extent *extents, u32 count)
+{
+	u64 total = 0;
+	for (u32 idx = 0; idx < count; idx++)
+		total += extents[idx].length;
+	return total;
+}
+
+struct region_placement_opts {
+	bool uncached;
+	bool paged;
+};
 
 /* The first free slot as the RAT's summary reads now, or LAYOUT_MAX_RAT_ENTRIES when none is. Needs
  * no turn: it is a hint for region_alloc_rat_entry, which confirms it under the lock. */
@@ -29,14 +55,9 @@ u32 region_find_free_rat_entry(struct fs_sb_info *sbi);
 
 /* Take a free slot under meta_lock. @hint is tried first when it still reads free, then the
  * summary's other free bits, and a scan of every entry is the fallback. */
-s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u64 size, u64 offset, u32 hint, umode_t mode,
+s32 region_alloc_rat_entry(struct fs_sb_info *sbi, const char *name, u32 hint, umode_t mode,
 			   const struct fs_daemon_attest_response *identity, u32 *out_rat_entry_id);
 bool region_free_rat_entry(struct fs_sb_info *sbi, struct layout_rat_entry *entry);
-
-/* Bring the mount's extent list up to the RAT's placement count, reading entries only when that
- * count moved. Needs no turn, only the mutex half: region_init_locked confirms the list against
- * the count once the turn is held, so what a peer changed meanwhile is read again there. */
-void region_survey_space(struct fs_sb_info *sbi, bool uncached);
 
 /* True when the summary disagrees with @seen, the taken bits a walk over the entries collected, or
  * its placement count reads odd. Needs no turn, so a peer mid-operation can answer true; the repair
@@ -68,8 +89,10 @@ s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out)
 
 /* Region initialization (called from ftruncate path).
  *
- * @uncached takes the pool the device maps uncached, where a mapping carries no struct pages and
- * so cannot be pinned for DMA. */
-s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size, bool uncached);
+ * @opts->uncached takes the pool the device maps uncached, where a mapping carries no struct pages
+ * and so cannot be pinned for DMA. @opts->paged lets the region lie in pieces, in the write-back pool
+ * only. @spans comes from region_alloc_spans. */
+s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
+		       const struct region_placement_opts *opts, struct region_span *spans);
 
 #endif /* _REGION_H */

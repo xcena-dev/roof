@@ -48,7 +48,7 @@ using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t LeastRounds = 4;
 
 // The table holds this many rows, so a prefill above it would only be refused.
-constexpr std::uint32_t DelegRows = 29;
+constexpr std::uint32_t DelegRows = fsuser::MaxDelegations;
 
 // The account a timed row names. It is nobody on this host, which is what keeps a grant from
 // widening a login that exists.

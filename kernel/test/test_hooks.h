@@ -48,8 +48,8 @@ struct test_deleg_reads {
 enum test_crash_point {
 	TEST_CRASH_NONE = 0,
 	TEST_CRASH_ALLOC_BEFORE_MARK = 1, /* entry taken, its summary bit still clear */
-	TEST_CRASH_PLACE_BEFORE_EXTENT = 2, /* count odd, extent not written */
-	TEST_CRASH_PLACE_BEFORE_EVEN = 3, /* extent written, count still odd */
+	TEST_CRASH_PLACE_BEFORE_COMMIT = 2, /* count odd, piece line written but not yet counted */
+	TEST_CRASH_PLACE_BEFORE_EVEN = 3, /* pieces counted, count still odd */
 	TEST_CRASH_FREE_BEFORE_UNMARK = 4, /* entry FREE, its summary bit still set */
 	TEST_CRASH_CREATE_BEFORE_NAME = 5, /* entry taken and marked, no name in the index */
 	TEST_CRASH_UNLINK_BEFORE_FREE = 6, /* name out of the index, entry still taken */

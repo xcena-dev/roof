@@ -140,7 +140,7 @@ Every requirement above is carried by a record, so where those records live is t
 ### 6.1 Cache Policy
 
 The metadata area and the front of the region area are mapped uncached, the rest of the region area write-back.<br>
-An application picks a region's pool with `FS_IOC_CACHE_SET` before the region is placed, and the choice is fixed once it is.<br>
+An application picks a region's pool with `FS_IOC_REGION_ATTR_SET` before the region is placed, and the choice is fixed once it is.<br>
 The mount checks the cache type it received and refuses a cached metadata area,<br>
 because `memtype_reserve` hands back write-back rather than failing when another owner already holds the range.
 

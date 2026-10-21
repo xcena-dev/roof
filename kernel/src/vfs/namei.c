@@ -87,7 +87,7 @@ static s32 __namei_create_locked(struct fs_sb_info *sbi, struct dentry *dentry, 
 	/* The mode, the caller's ids and the attested group and role ride in with the claim, so the
 	 * hot and acl lines are each written once. */
 	u32 rat_entry_id;
-	s32 ret = region_alloc_rat_entry(sbi, dentry->d_name.name, 0, 0, slot_hint, mode, identity, &rat_entry_id);
+	s32 ret = region_alloc_rat_entry(sbi, dentry->d_name.name, slot_hint, mode, identity, &rat_entry_id);
 	if (ret) {
 		pr_err("RAT entry reservation failed: %d\n", ret);
 		return ret;
@@ -118,11 +118,10 @@ static struct inode *__namei_create_inode(struct super_block *sb, struct fs_sb_i
 	struct fs_inode_info *xi = fs_get_inode_info(inode);
 	xi->region_id = rat_entry_id;
 	xi->rat_entry_id = rat_entry_id;
-	xi->region_offset = 0;
 	xi->owner_node_id = sbi->node_id;
 	xi->owner_pid = current->tgid;
 	xi->owner_birth_time = acl_read_caller_birth_time();
-	xi->data_phys_offset = 0; /* set by ftruncate */
+	xi->extent_count = 0; /* set by ftruncate */
 
 	inode->i_ino = inode_make_ino(rat_entry_id);
 	inode->i_size = 0;

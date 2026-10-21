@@ -23,6 +23,12 @@ enum layout_region_type {
 	LAYOUT_REGION_LOCK = 1,
 };
 
+/* 0 is CONTIGUOUS, so a zeroed hot line reads as one. */
+enum layout_placement {
+	LAYOUT_PLACEMENT_CONTIGUOUS = 0,
+	LAYOUT_PLACEMENT_PAGED = 1,
+};
+
 enum layout_rat_entry_state {
 	LAYOUT_RAT_ENTRY_FREE = 0,
 	LAYOUT_RAT_ENTRY_ALLOCATING = 1,
@@ -152,22 +158,39 @@ union acl_deleg_entry {
 };
 
 /* CL0 of a RAT entry: what an open, a read and a stat all reach for. */
-#define LAYOUT_RAT_HOT_FIELDS(FIELD, ARRAY, BYTES)                                  \
-	FIELD(32, state) /* enum layout_rat_entry_state */                          \
-	FIELD(32, region_type) /* enum layout_region_type */                        \
-	FIELD(64, phys_offset) /* 0 = not yet allocated (open-without-ftruncate) */ \
-	FIELD(64, size) /* 2MB aligned */                                           \
-	FIELD(64, alloc_time) /* ns */                                              \
-	FIELD(64, modified_at) /* ns */                                             \
-	FIELD(32, uid) /* POSIX owner UID */                                        \
-	FIELD(32, gid) /* POSIX owner GID */                                        \
-	FIELD(16, mode) /* POSIX mode bits */                                       \
-	BYTES(14, reserved0)
+#define LAYOUT_RAT_HOT_FIELDS(FIELD, ARRAY, BYTES)           \
+	FIELD(32, state) /* enum layout_rat_entry_state */   \
+	FIELD(32, region_type) /* enum layout_region_type */ \
+	FIELD(64, alloc_time) /* ns */                       \
+	FIELD(64, modified_at) /* ns */                      \
+	FIELD(32, uid) /* POSIX owner UID */                 \
+	FIELD(32, gid) /* POSIX owner GID */                 \
+	FIELD(16, mode) /* POSIX mode bits */                \
+	FIELD(16, placement) /* enum layout_placement */     \
+	FIELD(16, align_shift) /* log2, 0 for the granule */ \
+	FIELD(16, extent_count) /* 0 until placed */         \
+	BYTES(24, reserved0)
 
 CXL_DEFINE_LINE_VIEWS(layout_rat_hot, LAYOUT_RAT_HOT_FIELDS)
 
+enum layout_extents_config {
+	LAYOUT_MAX_EXTENTS = 4,
+};
+
+/* CL1: the pieces in file order. Written before the hot line counts them, so a line no hot line
+ * counts is never read and needs no clearing. */
+#define LAYOUT_RAT_EXTENT_FIELDS(FIELD, ARRAY, BYTES)                                 \
+	ARRAY(64, LAYOUT_MAX_EXTENTS, offset) /* bytes from the device start */       \
+	ARRAY(32, LAYOUT_MAX_EXTENTS, granules) /* in the superblock's granules */    \
+	ARRAY(16, LAYOUT_MAX_EXTENTS, device_id) /* 0 while a mount has one device */ \
+	BYTES(8, reserved)
+
+CXL_DEFINE_LINE_VIEWS(layout_rat_extent, LAYOUT_RAT_EXTENT_FIELDS)
+
+_Static_assert(LAYOUT_MAX_EXTENTS <= U16_MAX, "the hot line counts extents in 16 bits");
+
 /*
- * CL2 of a RAT entry: who owns the region, what a non-owner may do to it, and which delegation rows
+ * CL3 of a RAT entry: who owns the region, what a non-owner may do to it, and which delegation rows
  * a scan reads. An owner check reads most of these at once, which is why they share a line.
  */
 #define LAYOUT_RAT_ACL_FIELDS(FIELD, ARRAY, BYTES)                                           \
@@ -183,12 +206,11 @@ CXL_DEFINE_LINE_VIEWS(layout_rat_hot, LAYOUT_RAT_HOT_FIELDS)
 
 CXL_DEFINE_LINE_VIEWS(layout_rat_acl, LAYOUT_RAT_ACL_FIELDS)
 
-/*
- * One region file's entry, whose allocation is physically contiguous. It fills in two steps:
- * open(O_CREAT) leaves phys_offset and size 0, and ftruncate then places the region.
- */
+/* One region file's entry. open(O_CREAT) leaves extent_count 0, and ftruncate places the region. */
 struct layout_rat_entry {
 	struct layout_rat_hot hot;
+
+	struct layout_rat_extent extents;
 
 	/* Cold, reached only on a hash match. A name of exactly FS_NAME_MAX bytes keeps no
 	 * terminator here, so a reader supplies one. */
@@ -202,11 +224,14 @@ struct layout_rat_entry {
 /* Which line of an entry to fence, and what the asserts below hold the struct to. */
 enum layout_rat_cl {
 	LAYOUT_RAT_CL_HOT = 0,
-	LAYOUT_RAT_CL_NAME = 1,
-	LAYOUT_RAT_CL_ACL = 2,
+	LAYOUT_RAT_CL_EXTENTS = 1,
+	LAYOUT_RAT_CL_NAME = 2,
+	LAYOUT_RAT_CL_ACL = 3,
 };
 
 _Static_assert(offsetof(struct layout_rat_entry, hot) == LAYOUT_RAT_CL_HOT * 64, "CL_HOT enum must match hot offset");
+_Static_assert(offsetof(struct layout_rat_entry, extents) == LAYOUT_RAT_CL_EXTENTS * 64,
+	       "CL_EXTENTS enum must match extents offset");
 _Static_assert(offsetof(struct layout_rat_entry, name) == LAYOUT_RAT_CL_NAME * 64, "CL_NAME enum must match name offset");
 _Static_assert(FS_NAME_MAX + 1 == CXL_LINE_BYTES, "the name must fill its line exactly");
 _Static_assert(offsetof(struct layout_rat_entry, acl) == LAYOUT_RAT_CL_ACL * 64, "CL_ACL enum must match acl offset");

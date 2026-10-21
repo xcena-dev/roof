@@ -51,11 +51,7 @@ static s32 fs_alloc_mount_resources(struct fs_sb_info *sbi)
 	if (!sbi->shard_cache)
 		return -ENOMEM;
 
-	s32 ret = region_alloc_scratch(sbi);
-	if (ret)
-		return ret;
-
-	ret = region_alloc_refs(sbi);
+	s32 ret = region_alloc_refs(sbi);
 	if (ret)
 		return ret;
 
@@ -67,7 +63,6 @@ static void fs_free_mount_resources(struct fs_sb_info *sbi)
 {
 	gc_exit(sbi);
 	region_free_refs(sbi);
-	region_free_scratch(sbi);
 	kvfree(sbi->shard_cache);
 	sbi->shard_cache = NULL;
 }

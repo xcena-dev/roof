@@ -22,7 +22,7 @@
 enum @FS_PREFIX@_constants {
 	@FS_PREFIX_UPPER@_MAX_NODE_ID = 8,
 	@FS_PREFIX_UPPER@_NAME_MAX = 63,
-	@FS_PREFIX_UPPER@_DELEG_MAX = 29, /* Max delegation entries per region */
+	@FS_PREFIX_UPPER@_DELEG_MAX = 28, /* Max delegation entries per region */
 	@FS_PREFIX_UPPER@_LABEL_LEN = 16, /* a role grant's group or role, NUL-padded */
 };
 
@@ -101,16 +101,25 @@ enum @FS_PREFIX@_cache_policy {
 	@FS_PREFIX_UPPER@_CACHE_UNCACHED = 1,
 };
 
-struct @FS_PREFIX@_cache_req {
-	__u32 policy; /* enum @FS_PREFIX@_cache_policy */
+/* CONTIGUOUS is the one range a device-side reader needs. PAGED fits where no single gap does, and
+ * only the write-back pool takes it. */
+enum @FS_PREFIX@_placement {
+	@FS_PREFIX_UPPER@_PLACEMENT_CONTIGUOUS = 0,
+	@FS_PREFIX_UPPER@_PLACEMENT_PAGED = 1,
+};
+
+struct @FS_PREFIX@_region_attr_req {
+	__u32 cache; /* enum @FS_PREFIX@_cache_policy */
+	__u32 placement; /* enum @FS_PREFIX@_placement */
+	__u32 pieces; /* GET only: the placed region's pieces */
 	__u32 reserved;
 };
 #ifdef __cplusplus
-static_assert(sizeof(struct @FS_PREFIX@_cache_req) == 8,
-	      "@FS_PREFIX@_cache_req ioctl ABI: expected 8 bytes");
+static_assert(sizeof(struct @FS_PREFIX@_region_attr_req) == 16,
+	      "@FS_PREFIX@_region_attr_req ioctl ABI: expected 16 bytes");
 #else
-_Static_assert(sizeof(struct @FS_PREFIX@_cache_req) == 8,
-	       "@FS_PREFIX@_cache_req ioctl ABI: expected 8 bytes");
+_Static_assert(sizeof(struct @FS_PREFIX@_region_attr_req) == 16,
+	       "@FS_PREFIX@_region_attr_req ioctl ABI: expected 16 bytes");
 #endif
 
 /* ── ioctl commands ────────────────────────────────────────────────── */
@@ -121,9 +130,9 @@ _Static_assert(sizeof(struct @FS_PREFIX@_cache_req) == 8,
 #define @FS_PREFIX_UPPER@_IOC_PERM_REVOKE _IOW('X', 12, struct @FS_PREFIX@_perm_req)
 #define @FS_PREFIX_UPPER@_IOC_PERM_ASK _IOW('X', 15, struct @FS_PREFIX@_perm_req)
 
-/* Cache policy. SET answers -EBUSY once the region is placed, since another pool means other
- * bytes. GET reports where the region landed, or what SET asked for while it has none. */
-#define @FS_PREFIX_UPPER@_IOC_CACHE_SET _IOW('X', 13, struct @FS_PREFIX@_cache_req)
-#define @FS_PREFIX_UPPER@_IOC_CACHE_GET _IOR('X', 14, struct @FS_PREFIX@_cache_req)
+/* Region attributes, fixed once the region is placed: SET then answers -EBUSY. PAGED together with
+ * UNCACHED answers -EINVAL. */
+#define @FS_PREFIX_UPPER@_IOC_REGION_ATTR_SET _IOW('X', 13, struct @FS_PREFIX@_region_attr_req)
+#define @FS_PREFIX_UPPER@_IOC_REGION_ATTR_GET _IOR('X', 14, struct @FS_PREFIX@_region_attr_req)
 
 #endif /* _@FS_PREFIX_UPPER@_UAPI_H */

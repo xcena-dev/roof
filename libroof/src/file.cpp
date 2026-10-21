@@ -23,8 +23,8 @@ namespace fsuser
 {
 
 // The ioctl records under this tree's C++ names. The uapi header keeps the kernel's C spelling.
-using FsCacheReq = struct fs_cache_req;
 using FsPermReq = struct fs_perm_req;
+using FsRegionAttrReq = struct fs_region_attr_req;
 
 // The header spells these for a caller without the kernel's, so they are held to the kernel's here.
 static_assert(Permission::Read.bits == FS_PERM_READ);
@@ -39,6 +39,8 @@ static_assert(MaxDelegations == FS_DELEG_MAX);
 static_assert(MaxLabelBytes == FS_LABEL_LEN - 1);
 static_assert(static_cast<std::uint32_t>(CachePolicy::Writeback) == FS_CACHE_WRITEBACK);
 static_assert(static_cast<std::uint32_t>(CachePolicy::Uncached) == FS_CACHE_UNCACHED);
+static_assert(static_cast<std::uint32_t>(Placement::Contiguous) == FS_PLACEMENT_CONTIGUOUS);
+static_assert(static_cast<std::uint32_t>(Placement::Paged) == FS_PLACEMENT_PAGED);
 
 namespace
 {
@@ -197,31 +199,33 @@ Mapping File::map(std::uint64_t bytes, std::int32_t protection)
     return Mapping{mapped, bytes};
 }
 
-void File::setCachePolicy(CachePolicy policy)
+void File::setRegionAttr(const RegionAttr_t& attr)
 {
-    requireOpen("cache_set");
+    requireOpen("region_attr_set");
 
-    FsCacheReq sent{};
-    sent.policy = static_cast<std::uint32_t>(policy);
+    FsRegionAttrReq sent{};
+    sent.cache = static_cast<std::uint32_t>(attr.cache);
+    sent.placement = static_cast<std::uint32_t>(attr.placement);
+    sent.pieces = attr.pieces;
 
-    if (::ioctl(held_, FS_IOC_CACHE_SET, &sent) != 0)
+    if (::ioctl(held_, FS_IOC_REGION_ATTR_SET, &sent) != 0)
     {
-        throw FsCodedError{"cache_set", lastSystemError()};
+        throw FsCodedError{"region_attr_set", lastSystemError()};
     }
 }
 
-CachePolicy File::readCachePolicy()
+RegionAttr_t File::readRegionAttr()
 {
-    requireOpen("cache_get");
+    requireOpen("region_attr_get");
 
-    FsCacheReq taken{};
+    FsRegionAttrReq taken{};
 
-    if (::ioctl(held_, FS_IOC_CACHE_GET, &taken) != 0)
+    if (::ioctl(held_, FS_IOC_REGION_ATTR_GET, &taken) != 0)
     {
-        throw FsCodedError{"cache_get", lastSystemError()};
+        throw FsCodedError{"region_attr_get", lastSystemError()};
     }
 
-    return static_cast<CachePolicy>(taken.policy);
+    return RegionAttr_t{static_cast<CachePolicy>(taken.cache), static_cast<Placement>(taken.placement), taken.pieces};
 }
 
 void File::setDefaultPermission(Permission perms)

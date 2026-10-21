@@ -35,7 +35,6 @@ struct layout_index_link;
 struct layout_rat;
 struct layout_shard_header;
 struct layout_superblock;
-struct region_span;
 struct sysfs_mount;
 struct daemon_channel;
 
@@ -148,13 +147,6 @@ struct fs_sb_info {
 	/* ── Per-shard DRAM cache (read-only after mount) ─────────────────── */
 	struct fs_shard_cache *shard_cache;
 
-	/* The gap search's working array, held by the mount so that search allocates nothing. It
-	 * stays the pool's standing extents as of span_placements, so a search that finds the RAT's
-	 * placement count unchanged reads no entry at all. Guarded by meta_lock's mutex half. */
-	struct region_span *span_scratch;
-	u32 span_count;
-	bool span_uncached;
-	u64 span_placements;
 	/* Whether the RAT's summary line agreed with its entries when this mount last walked
 	 * them. False keeps the extent search on the entries themselves. */
 	bool rat_map_trusted;

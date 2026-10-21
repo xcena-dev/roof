@@ -95,9 +95,9 @@ void checkOnePolicy(fsuser::tests::Report& report, fsuser::tests::Mount& mount,
 
     report.checkAccepted("the policy is accepted before placement", [&]
                          {
-                             file.setCachePolicy(policy);
+                             file.setRegionAttr(fsuser::RegionAttr_t{policy});
                          });
-    report.check("reading it back gives what was asked", file.readCachePolicy() == policy);
+    report.check("reading it back gives what was asked", file.readRegionAttr().cache == policy);
 
     file.resize(PlacementSize);
 
@@ -108,7 +108,7 @@ void checkOnePolicy(fsuser::tests::Report& report, fsuser::tests::Mount& mount,
                  wantUncached ? (placed >= pools.ucStart && placed < pools.wbStart)
                               : (placed >= pools.wbStart));
 
-    report.check("reading it back after placement still agrees", file.readCachePolicy() == policy);
+    report.check("reading it back after placement still agrees", file.readRegionAttr().cache == policy);
 
     auto mapping = file.map(PlacementSize, PROT_READ);
     const auto vmFlags = readVmFlags(mapping.get());
@@ -119,11 +119,11 @@ void checkOnePolicy(fsuser::tests::Report& report, fsuser::tests::Mount& mount,
                  !flagsHold(vmFlags, wantUncached ? MixedMapFlag : PfnMapFlag));
 
     // A placed region has its pool fixed, since another pool means other bytes.
+    const fsuser::RegionAttr_t otherPool{wantUncached ? fsuser::CachePolicy::Writeback : fsuser::CachePolicy::Uncached};
     report.checkRefusedWith("changing it after placement answers EBUSY", std::errc::device_or_resource_busy,
                             [&]
                             {
-                                file.setCachePolicy(wantUncached ? fsuser::CachePolicy::Writeback
-                                                                 : fsuser::CachePolicy::Uncached);
+                                file.setRegionAttr(otherPool);
                             });
 }
 
@@ -139,9 +139,9 @@ void checkRefusals(fsuser::tests::Report& report, fsuser::tests::Mount& mount,
                             {
                                 // A value outside the enum is the point: the kernel has to refuse it.
                                 // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-                                file.setCachePolicy(static_cast<fsuser::CachePolicy>(7));
+                                file.setRegionAttr(fsuser::RegionAttr_t{static_cast<fsuser::CachePolicy>(7)});
                             });
-    report.check("the default is write-back", file.readCachePolicy() == fsuser::CachePolicy::Writeback);
+    report.check("the default is write-back", file.readRegionAttr().cache == fsuser::CachePolicy::Writeback);
 }
 
 }  // namespace

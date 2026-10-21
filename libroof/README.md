@@ -13,8 +13,8 @@ The contract the kernel holds every caller to, library or not, is in [`kernel/`]
 | `File::open(path, flags, mode)` | `open` | A descriptor with `O_CLOEXEC` added. With `O_CREAT` the region has a name and a slot, and no bytes yet. |
 | `File::resize(bytes)` | `ftruncate` | The region's physical extent, rounded up to `DaxAlignment`. It is placed once: a second `resize` on a placed file is refused. |
 | `File::map(bytes, protection)` | `mmap` | A `Mapping` that unmaps on the way out. A caller who is not the owner gets a delegation row written for it on its first map, if the daemon allows. |
-| `File::setCachePolicy(policy)` | `ioctl` | Which pool the placement takes, and so how every later mapping is cached. Accepted only while the file has no extent. |
-| `File::readCachePolicy()` | `ioctl` | Where the region landed, or what `setCachePolicy` asked for while it has no extent. |
+| `File::setRegionAttr(attr)` | `ioctl` | Which pool the placement takes, and so how every later mapping is cached, and whether it may lie in pieces. Accepted only while the file has no extent. |
+| `File::readRegionAttr()` | `ioctl` | How the region landed and in how many pieces, or what `setRegionAttr` asked for while it has no extent. |
 | `File::setDefaultPermission(perms)` | `ioctl` | What the region grants to everyone without a row of their own. Needs `ADMIN`. |
 | `File::grantPermission(uid, gid, perms)` | `ioctl` | A delegation row for an account on this node. `AnyId` in one id leaves the other to decide. |
 | `File::revokePermission(uid, gid)` | `ioctl` | That row taken off. A row naming the caller needs nothing, any other needs `ADMIN`, and a row belongs to the node that wrote it. A gid reaches a process row by the groups its holder carries, since the row carries only the one it ran under. |
@@ -40,8 +40,8 @@ using roof::Permission;
 
 auto file = roof::File::open("/mnt/rooffs/weights", O_CREAT | O_RDWR, 0644);
 // The pool is chosen before the bytes exist.
-file.setCachePolicy(CachePolicy::Uncached);
-CachePolicy policy = file.readCachePolicy();
+file.setRegionAttr(roof::RegionAttr_t{CachePolicy::Uncached});
+CachePolicy policy = file.readRegionAttr().cache;
 
 file.resize(roof::DaxAlignment);
 

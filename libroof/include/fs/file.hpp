@@ -75,7 +75,7 @@ inline constexpr Permission Permission::All{0x003F};
 inline constexpr std::uint32_t AnyId = ~0U;
 
 // How many delegation rows one region holds. A grant past the last one answers ENOSPC.
-inline constexpr std::uint32_t MaxDelegations = 29;
+inline constexpr std::uint32_t MaxDelegations = 28;
 
 // In a role grant or revoke, every node rather than one.
 inline constexpr std::uint32_t AnyNode = 0;
@@ -89,6 +89,22 @@ enum class CachePolicy : std::uint32_t
 {
     Writeback = 0,
     Uncached = 1,
+};
+
+// How a region's bytes lie on the device. Contiguous is one range, which a device-side reader needs.
+// Paged may take several pieces, so it fits where no single gap is large enough. Write-back only.
+enum class Placement : std::uint32_t
+{
+    Contiguous = 0,
+    Paged = 1,
+};
+
+// pieces is read back only, and 0 while the region has none.
+struct RegionAttr_t
+{
+    CachePolicy cache{CachePolicy::Writeback};
+    Placement placement{Placement::Contiguous};
+    std::uint32_t pieces{0};
 };
 
 class File;
@@ -163,12 +179,11 @@ public:
     // delegation into the shared record under the lock.
     [[nodiscard]] Mapping map(std::uint64_t bytes, std::int32_t protection);
 
-    // Which pool the placement is to take, and so how every later mapping of this file is cached.
-    // Only a file with no extent yet accepts one, since resize() is what fixes it.
-    void setCachePolicy(CachePolicy policy);
+    // Only a file with no extent yet accepts one, since resize() is what fixes it. pieces must be 0.
+    void setRegionAttr(const RegionAttr_t& attr);
 
-    // Where the region landed, or what setCachePolicy asked for while it has no extent.
-    [[nodiscard]] CachePolicy readCachePolicy();
+    // How the region landed, or what setRegionAttr asked for while it has no extent.
+    [[nodiscard]] RegionAttr_t readRegionAttr();
 
     // Replaces what this region grants to everyone with no delegation of their own. The kernel
     // checks ADMIN next to the write.

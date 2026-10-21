@@ -40,12 +40,6 @@ static inline void *layout_get_meta_ptr(struct fs_sb_info *sbi, u64 offset)
 	return (void *)((char *)sbi->meta_base + offset);
 }
 
-/* Validate that a device offset is inside the device and the areas are mapped */
-static inline bool layout_is_valid_phys_offset(struct fs_sb_info *sbi, u64 offset)
-{
-	return offset > 0 && offset < sbi->total_size && sbi->meta_base;
-}
-
 /*
  * GSB accessor: the address alone. fs_init_layout_ptrs caches the pointer, and
  * super_read_superblock computes it from meta_base itself rather than calling this.
@@ -118,16 +112,9 @@ static inline struct layout_shard_header *layout_get_shard_header(struct fs_sb_i
 	return sbi->shard_cache[shard_id].header;
 }
 
-/*
- * layout_get_file_data_ptr - file data pointer at (data_phys_offset + pos).
- *
- * data_phys_offset is the per-inode physical base; pos is the read offset
- * within that region.  Caller must RMB before accessing the returned pointer.
- */
-static inline void *layout_get_file_data_ptr(struct fs_sb_info *sbi, u64 data_phys_offset, loff_t pos)
+/* Caller must RMB before reading through the returned pointer. */
+static inline void *layout_get_file_data_ptr(struct fs_sb_info *sbi, u64 offset)
 {
-	u64 offset = data_phys_offset + (u64)pos;
-
 	if (layout_check_meta_offset(sbi, offset))
 		return layout_get_meta_ptr(sbi, offset);
 
@@ -166,12 +153,11 @@ static inline bool layout_check_rat_name(struct fs_sb_info *sbi, u32 region_id, 
 	return namelen >= FS_NAME_MAX || stored[namelen] == '\0';
 }
 
-/* Validate data_phys_offset + access range is within DAX mapping */
-static inline bool layout_is_valid_region_addr(struct fs_sb_info *sbi, u64 data_phys_offset, u64 access_size)
+static inline bool layout_is_valid_region_addr(struct fs_sb_info *sbi, u64 offset, u64 access_size)
 {
-	if (unlikely(data_phys_offset == 0))
+	if (unlikely(offset == 0))
 		return false;
-	return layout_is_valid_range(sbi, data_phys_offset, access_size);
+	return layout_is_valid_range(sbi, offset, access_size);
 }
 
 /* ============================================================================

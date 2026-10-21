@@ -11,7 +11,7 @@
 # next point, since a dead mount stays dead.
 #
 # Runs against the host's two mounts and their daemons, so it is in the lifecycle label and not the
-# suite gate. Needs root and a module built with CONFIG_FS_TEST_KNOBS:
+# suite gate. Needs root, a module built with CONFIG_FS_TEST_KNOBS, and pool_hold for the paged points:
 #
 #   sudo ctest --test-dir <build> -R rat_summary_crash
 
@@ -33,6 +33,10 @@ LIVE_MOUNT="${LIVE_MOUNT:-/mnt/${FS_NAME}2}"
 # Past the heartbeat timeout and two GC_INTERVAL_MS sweeps: the survivor has to read the dead node
 # as gone, become the admin, and then repair on a sweep of its own.
 RECOVERY_WAIT_S="${RECOVERY_WAIT_S:-90}"
+
+POOL_HOLD="${POOL_HOLD:-${ROOT}/build/tests/pool_hold}"
+# Long enough for pool_hold to fill a write-back pool of a hundred-odd GiB name by name.
+HOLD_ANSWER_S=600
 
 FAILED=0
 pass() { printf 'PASS %s\n' "$*"; }
@@ -408,13 +412,138 @@ runPoint()
     reviveDeadNode && pass "P${point}: node ${DEAD_NODE} is back"
 }
 
+# Sends one command line to the pool_hold coprocess and leaves its reply in HOLD_ANSWER.
+holdAsk()
+{
+    printf '%s\n' "$1" >&"${HOLD[1]}"
+    read -r -t "$HOLD_ANSWER_S" -u "${HOLD[0]}" HOLD_ANSWER || HOLD_ANSWER="(no answer)"
+}
+
+# pool_hold unlinks what it made on the way out, so the pool is whole again for the next point.
+holdQuit()
+{
+    holdAsk quit
+    wait "$HOLD_PID" 2>/dev/null
+}
+
+# Until the holes read free again, which is the survivor having taken back what lay in them.
+waitForHoles()
+{
+    local deadline=$((SECONDS + RECOVERY_WAIT_S))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        holdAsk free
+        [ "$HOLD_ANSWER" = "$1" ] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+# A paged placement that dies at @1, into holes that a process on the survivor cut into a full pool
+# and holds. Point 2 dies before the hot line counts the pieces and point 3 after it does.
+runPagedPoint()
+{
+    local point="$1" what="$2"
+    local label="paged ${point}"
+    [ -x "$POOL_HOLD" ] || { fail "${label}: no pool_hold at ${POOL_HOLD}"; return; }
+
+    # An earlier point's dead node may still be waiting for the survivor to take its regions back, and
+    # one freed in the middle of this point would open a gap beside a hole.
+    if ! waitForTakenCount "$TAKEN_AT_START"; then
+        fail "${label}: $(takenCount "$LIVE_NODE") entries still taken, ${TAKEN_AT_START} before the first point"
+        return
+    fi
+
+    coproc HOLD { asUser "$POOL_HOLD" serve "$LIVE_MOUNT" "paged-crash-${point}-" 3; }
+    local ready bytes pieces
+    read -r -t "$HOLD_ANSWER_S" -u "${HOLD[0]}" ready bytes pieces || ready=""
+    if [ "$ready" != ready ]; then
+        fail "${label}: pool_hold could not cut the pool into holes"
+        holdQuit
+        return
+    fi
+    note "${label}: ${bytes} bytes of holes, ${pieces} pieces expected"
+
+    local mark
+    mark=$(($(dmesg | wc -l) + 1))
+    printf '%s' "$point" >"${PARAM_DIR}/region_inject_crash_point"
+    asUser "$POOL_HOLD" place "${DEAD_MOUNT}/paged-crash-${point}" "$bytes" >/dev/null 2>&1 &&
+        fail "${label}: the placement that died reported success"
+    if dmesg | tail -n +"$mark" | grep -q "died at crash point ${point}"; then
+        pass "${label}: node ${DEAD_NODE} died ${what}"
+    else
+        fail "${label}: the crash point did not fire"
+        printf '0' >"${PARAM_DIR}/region_inject_crash_point"
+        holdQuit
+        return
+    fi
+
+    # The survivor's sweep is held, so what its placement finds is what the death left and not what a
+    # reclaim made of it.
+    pauseGc "$LIVE_NODE" 1
+    killDeadDaemon
+    local placed="paged-crash-${point}-next"
+    holdAsk "place ${placed} ${RECOVERY_WAIT_S}"
+    if [ "$point" -eq 2 ]; then
+        if [ "$HOLD_ANSWER" = "placed ${pieces}" ]; then
+            pass "${label}: node ${LIVE_NODE} placed into the holes the uncounted piece line named"
+        else
+            fail "${label}: the survivor's placement answered '${HOLD_ANSWER}'"
+        fi
+        pauseGc "$LIVE_NODE" 0
+    else
+        if [ "$HOLD_ANSWER" = "refused 28" ]; then
+            pass "${label}: the dead node's counted pieces still hold the holes"
+        else
+            fail "${label}: the survivor's placement answered '${HOLD_ANSWER}', not ENOSPC"
+        fi
+        pauseGc "$LIVE_NODE" 0
+        if waitForHoles "$bytes"; then
+            pass "${label}: node ${LIVE_NODE} took back the dead node's pieces"
+        else
+            fail "${label}: the holes stayed taken for ${RECOVERY_WAIT_S}s"
+        fi
+        placed="paged-crash-${point}-after"
+        holdAsk "place ${placed} ${RECOVERY_WAIT_S}"
+        if [ "$HOLD_ANSWER" = "placed ${pieces}" ]; then
+            pass "${label}: node ${LIVE_NODE} placed into the holes taken back"
+        else
+            fail "${label}: the placement after the reclaim answered '${HOLD_ANSWER}'"
+        fi
+    fi
+
+    holdAsk "verify ${placed}"
+    if [ "$HOLD_ANSWER" = ok ]; then
+        pass "${label}: its bytes read back across every granule boundary"
+    else
+        fail "${label}: its bytes did not read back"
+    fi
+    holdAsk keepers
+    if [ "$HOLD_ANSWER" = ok ]; then
+        pass "${label}: the neighbours of the holes kept their bytes"
+    else
+        fail "${label}: a neighbour of the holes lost its bytes"
+    fi
+    if waitForRepair; then
+        pass "${label}: node ${LIVE_NODE} brought the summary back in step"
+    else
+        fail "${label}: the summary stayed out of step for ${RECOVERY_WAIT_S}s"
+    fi
+
+    holdQuit
+    reviveDeadNode && pass "${label}: node ${DEAD_NODE} is back"
+}
+
 # ONLY="7 8 full" runs those cases alone; empty runs them all.
 ONLY="${ONLY:-}"
 wants() { [ -z "$ONLY" ] || [[ " ${ONLY} " == *" $1 "* ]]; }
 
+TAKEN_AT_START="$(takenCount "$LIVE_NODE")"
+
 wants 1 && runPoint 1 "with a slot taken and its bit clear"
-wants 2 && runPoint 2 "with the count odd and no extent written"
-wants 3 && runPoint 3 "with an extent written and the count odd"
+wants 2 && runPoint 2 "with the count odd and the piece line written but not counted"
+wants 3 && runPoint 3 "with the pieces counted and the count odd"
+wants paged2 && runPagedPoint 2 "placing paged, with the piece line written but not counted"
+wants paged3 && runPagedPoint 3 "placing paged, with the pieces counted and the count odd"
 wants 4 && runPoint 4 "with a slot freed and its bit still set"
 wants 5 && runPoint 5 "with a slot taken and marked but no name in the index"
 wants 6 && runPoint 6 "with the name out of the index and the slot still taken"
