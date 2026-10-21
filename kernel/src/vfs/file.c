@@ -343,6 +343,28 @@ static s32 file_authorize_or_ask(struct fs_sb_info *sbi, struct fs_inode_info *x
 	return acl_check_permission(sbi, xi->rat_entry_id, required_perms);
 }
 
+/* Hardened usercopy aborts a copy that runs past the end of a large folio, so each copy stays
+ * inside the folio it starts in. */
+static u64 file_copy_to_iter(const char *src, u64 count, struct iov_iter *to)
+{
+	u64 copied = 0;
+
+	while (copied < count) {
+		u64 step = count - copied;
+		if (virt_addr_valid(src)) {
+			struct folio *folio = virt_to_folio(src);
+			step = min_t(u64, step, folio_size(folio) - offset_in_folio(folio, src));
+		}
+
+		u64 done = copy_to_iter(src, step, to);
+		copied += done;
+		src += done;
+		if (done < step)
+			break;
+	}
+	return copied;
+}
+
 /*
  * Direct CXL read — bypasses page cache, copies to user buffer.
  *
@@ -410,7 +432,7 @@ static ssize_t file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	void *data_ptr = layout_get_file_data_ptr(ctx.sbi, ctx.xi->data_phys_offset, pos);
 	CXL_RMB_CACHED(data_ptr, count);
 
-	size_t copied = copy_to_iter(data_ptr, count, to);
+	u64 copied = file_copy_to_iter(data_ptr, count, to);
 	if (copied == 0)
 		return -EFAULT;
 
