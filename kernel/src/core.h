@@ -143,6 +143,7 @@ struct fs_sb_info {
 	 * mapped, since the split they take has to be the one the format then publishes. */
 	u32 format_granule_shift;
 	u32 format_uc_granules;
+	bool format_on_mount;
 
 	/* ── Per-shard DRAM cache (read-only after mount) ─────────────────── */
 	struct fs_shard_cache *shard_cache;

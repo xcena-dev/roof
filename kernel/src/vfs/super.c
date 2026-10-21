@@ -744,6 +744,7 @@ static s32 super_fill_super(struct super_block *sb, void *data, s32 silent)
 	pr_debug("fill_super DEV_DAX %s (node_id=%d)\n", opts.daxdev, opts.node_id);
 
 	/* Before the areas are mapped, because a format about to run decides where they split. */
+	sbi->format_on_mount = opts.format;
 	sbi->format_granule_shift = opts.granule_shift ? opts.granule_shift : LAYOUT_GRANULE_SHIFT_DEFAULT;
 	if (opts.uc_mib) {
 		u64 bytes = (u64)opts.uc_mib << 20;

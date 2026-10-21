@@ -542,6 +542,111 @@ static vm_fault_t file_data_fault(struct vm_fault *vmf)
 	return compat_vmf_insert_page_mkwrite(vmf, pfn_to_page(pfn), vmf->flags & FAULT_FLAG_WRITE);
 }
 
+/* The write-back folio that starts at @phys and is exactly @order, or NULL. Only a whole folio can
+ * sit behind one huge entry, and the area's pgmap decides which orders exist where. */
+static struct folio *file_get_huge_folio(u64 phys, u32 order)
+{
+	const u64 pfn = phys >> PAGE_SHIFT;
+	if (!pfn_valid(pfn))
+		return NULL;
+
+	struct folio *folio = page_folio(pfn_to_page(pfn));
+	if (folio_order(folio) != order || folio_pfn(folio) != pfn)
+		return NULL;
+	return folio;
+}
+
+static vm_fault_t file_insert_huge_folio(struct vm_fault *vmf, struct folio *folio, u32 order)
+{
+	const bool write = vmf->flags & FAULT_FLAG_WRITE;
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	if (order == PMD_ORDER)
+		return compat_vmf_insert_folio_pmd(vmf, folio, write);
+#ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+	if (order == PUD_ORDER)
+		return compat_vmf_insert_folio_pud(vmf, folio, write);
+#endif
+#endif
+	return VM_FAULT_FALLBACK;
+}
+
+/* One PMD or PUD entry over a whole write-back folio, when the vma, the file and the physical
+ * alignment allow it. Anything else, a private mapping included, takes the 4 KiB path. */
+static vm_fault_t file_huge_fault(struct vm_fault *vmf, unsigned int order)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	if ((order != PMD_ORDER && order != PUD_ORDER) || !(vma->vm_flags & VM_SHARED))
+		return VM_FAULT_FALLBACK;
+
+	struct file *own = vma->vm_private_data;
+	if (!own)
+		return VM_FAULT_FALLBACK;
+
+	struct inode_ctx ctx;
+	if (!inode_open_ctx(&ctx, file_inode(own)) || ctx.xi->data_phys_offset == 0)
+		return VM_FAULT_FALLBACK;
+	if (layout_check_meta_offset(ctx.sbi, ctx.xi->data_phys_offset))
+		return VM_FAULT_FALLBACK;
+
+	const u64 entry_bytes = PAGE_SIZE << order;
+	const u64 start = ALIGN_DOWN(vmf->address, entry_bytes);
+	if (start < vma->vm_start || vma->vm_end - start < entry_bytes)
+		return VM_FAULT_FALLBACK;
+
+	const u64 offset = ((u64)vma->vm_pgoff << PAGE_SHIFT) + (start - vma->vm_start);
+	const u64 size = (u64)i_size_read(ctx.inode);
+	if (offset >= size || size - offset < entry_bytes)
+		return VM_FAULT_FALLBACK;
+	if (!layout_is_valid_region_addr(ctx.sbi, ctx.xi->data_phys_offset, offset + entry_bytes))
+		return VM_FAULT_FALLBACK;
+
+	const u64 phys = ctx.sbi->phys_base + ctx.xi->data_phys_offset + offset;
+	if (!IS_ALIGNED(phys, entry_bytes))
+		return VM_FAULT_FALLBACK;
+
+	struct folio *folio = file_get_huge_folio(phys, order);
+	if (!folio)
+		return VM_FAULT_FALLBACK;
+
+	/* The folio and not its pfn, so the entry is not special and GUP finds pages to pin. */
+	return file_insert_huge_folio(vmf, folio, order);
+}
+
+/* Places a mapping at the same offset into a huge entry as the physical address it maps, so
+ * file_huge_fault can insert whole entries. A hint or MAP_FIXED keeps the address it names. */
+static unsigned long file_get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
+					    unsigned long pgoff, unsigned long flags)
+{
+	struct inode_ctx ctx;
+	if (addr || (flags & MAP_FIXED) ||
+	    !inode_open_ctx(&ctx, file_inode(file)) ||
+	    ctx.xi->data_phys_offset == 0 ||
+	    layout_check_meta_offset(ctx.sbi, ctx.xi->data_phys_offset))
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	const u64 region_phys = ctx.sbi->phys_base + ctx.xi->data_phys_offset;
+	const u64 region_pfn = region_phys >> PAGE_SHIFT;
+	if (!pfn_valid(region_pfn))
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	const u32 order = folio_order(page_folio(pfn_to_page(region_pfn)));
+	if (order != PMD_ORDER && order != PUD_ORDER)
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	/* Aligned only when one whole entry fits inside the mapping. */
+	const u64 entry_bytes = PAGE_SIZE << order;
+	const u64 map_phys = region_phys + ((u64)pgoff << PAGE_SHIFT);
+	if (len > TASK_SIZE - entry_bytes || ALIGN(map_phys, entry_bytes) + entry_bytes > map_phys + len)
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	const u64 found = compat_get_unmapped_area(file, 0, len + entry_bytes, pgoff, flags);
+	if (IS_ERR_VALUE(found))
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	return found + ((map_phys - found) & (entry_bytes - 1));
+}
+
 static s32 file_attach_vm_ops(struct vm_area_struct *vma, struct fs_sb_info *sbi, struct file *own)
 {
 	mutex_lock(&sbi->vm_ops_lock);
@@ -554,6 +659,7 @@ static s32 file_attach_vm_ops(struct vm_area_struct *vma, struct fs_sb_info *sbi
 		sbi->vm_ops.close = file_vma_close;
 		sbi->vm_ops.mprotect = file_vma_mprotect;
 		sbi->vm_ops.fault = file_data_fault;
+		sbi->vm_ops.huge_fault = file_huge_fault;
 		sbi->vm_ops_seeded = true;
 	}
 	mutex_unlock(&sbi->vm_ops_lock);
@@ -602,8 +708,8 @@ static int file_mmap(struct file *file, struct vm_area_struct *vma)
 		return -ENODATA;
 
 	/*
-	 * A file region faults in one page at a time, so the mapping keeps the struct pages a
-	 * GPU DMA registration has to pin. VM_PFNMAP would hand GUP none.
+	 * A file region faults in a page or a whole huge folio at a time, so the mapping keeps the
+	 * struct pages a GPU DMA registration has to pin. VM_PFNMAP would hand GUP none.
 	 *
 	 * The lock region is the exception: it lives in the uncached metadata area, which has
 	 * no struct pages to insert, and its users want cross-node visibility rather than DMA.
@@ -941,6 +1047,7 @@ const struct file_operations file_fops = {
 	.read_iter = file_read_iter,
 	.write_iter = file_write_iter,
 	.mmap = file_mmap,
+	.get_unmapped_area = file_get_unmapped_area,
 	.open = file_open,
 	.release = file_release,
 	.fsync = noop_fsync,

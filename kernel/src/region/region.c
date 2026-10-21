@@ -269,6 +269,15 @@ s32 region_repair_map(struct fs_sb_info *sbi)
 	return moves + (odd ? 1 : 0);
 }
 
+/* The first offset at or past @offset a region may start at. A write-back region starts on a
+ * physical granule boundary, since a huge page entry needs one and the device need not sit on it. */
+static u64 region_align_candidate(const struct fs_sb_info *sbi, bool uncached, u64 offset)
+{
+	if (uncached)
+		return layout_align_up(offset, sbi->granule);
+	return layout_align_up(sbi->phys_base + offset, sbi->granule) - sbi->phys_base;
+}
+
 /* The first gap of @size in the sorted list, or -ENOSPC. */
 static s32 region_pick_gap(struct fs_sb_info *sbi, bool uncached, u64 size, u64 *out_offset)
 {
@@ -277,14 +286,14 @@ static s32 region_pick_gap(struct fs_sb_info *sbi, bool uncached, u64 size, u64 
 	region_get_pool_bounds(sbi, uncached, &regions_start, &regions_end);
 
 	const struct region_span *spans = sbi->span_scratch;
-	u64 candidate = regions_start;
+	u64 candidate = region_align_candidate(sbi, uncached, regions_start);
 	for (u32 idx = 0; idx < sbi->span_count; idx++) {
 		if (candidate + size <= spans[idx].offset) {
 			*out_offset = candidate;
 			return 0;
 		}
 		if (spans[idx].end > candidate)
-			candidate = layout_align_up(spans[idx].end, sbi->granule);
+			candidate = region_align_candidate(sbi, uncached, spans[idx].end);
 	}
 
 	if (candidate + size <= regions_end) {

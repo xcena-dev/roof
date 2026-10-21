@@ -9,6 +9,7 @@
 #include <linux/memremap.h>
 #include <linux/mutex.h>
 
+#include "compat.h"
 #include "core.h"
 #include "cxl/dax_area.h"
 #include "cxl/io.h"
@@ -66,6 +67,12 @@ static int dax_resolve_target_node(const char *devname)
 	return (int)node;
 }
 
+/* One pgmap per run of one folio order. PUD-order folios need a range that starts and ends on a
+ * physical 1 GiB boundary, and the write-back area's two ends need not sit on one. */
+enum dax_area_config {
+	DAX_WB_PGMAPS_MAX = 3,
+};
+
 /*
  * The two mappings belong to the device rather than to a mount. memremap_pages registers the
  * vmemmap for a physical range once and refuses a second registration over it, so mounts of
@@ -77,9 +84,12 @@ struct dax_areas {
 	 * ends and the write-back one begins, read off the superblock. Kept here because the
 	 * mapping it describes belongs to the device rather than to a mount. */
 	u64 wb_start;
+	/* The granule the folio orders were chosen for, off the same read as @wb_start. */
+	u32 granule_shift;
 	void __iomem *meta;
 	void *data;
-	struct dev_pagemap pgmap;
+	struct dev_pagemap pgmaps[DAX_WB_PGMAPS_MAX];
+	u32 pgmap_count;
 	u32 refs;
 };
 
@@ -110,13 +120,18 @@ static struct dax_areas *dax_find_areas_slot(u64 phys_base)
  * over the superblock and gives it back. A device with no filesystem on it yet answers with the
  * default, which is what the format about to run will write.
  */
-static u64 dax_read_wb_start(const struct fs_sb_info *sbi, u64 phys_addr, u64 dev_size)
+static u64 dax_read_wb_start(const struct fs_sb_info *sbi, u64 phys_addr, u64 dev_size, u32 *granule_shift)
 {
 	/* What a format on this mount would write, which is where the areas split on a device that
 	 * has no filesystem to read one off yet. */
 	const u64 request_granule = 1ULL << sbi->format_granule_shift;
 	const u64 fallback = ALIGN(LAYOUT_DATA_OFFSET, request_granule) +
 			     (u64)sbi->format_uc_granules * request_granule;
+
+	*granule_shift = sbi->format_granule_shift;
+	/* A format on this mount replaces the superblock, so the split it publishes is the one to map. */
+	if (sbi->format_on_mount)
+		return fallback;
 
 	void __iomem *window = ioremap_uc(phys_addr, LAYOUT_SUPERBLOCK_SIZE);
 	if (!window)
@@ -140,7 +155,66 @@ static u64 dax_read_wb_start(const struct fs_sb_info *sbi, u64 phys_addr, u64 de
 	if (start == 0 || start >= dev_size)
 		return fallback;
 
+	*granule_shift = head.local.granule_shift;
 	return start;
+}
+
+static void dax_unmap_wb_area(struct dax_areas *areas)
+{
+	while (areas->pgmap_count) {
+		memunmap_pages(&areas->pgmaps[--areas->pgmap_count]);
+	}
+}
+
+/*
+ * The write-back area [@start, @end) as ZONE_DEVICE pages in PMD-order folios, or, under a granule
+ * of 1 GiB or more, PUD-order ones over its 1 GiB-aligned middle. Nothing stays mapped on failure.
+ */
+static void *dax_map_wb_area(struct dax_areas *areas, u64 start, u64 end, u32 granule_shift, s32 node)
+{
+	u64 body_start = start;
+	u64 body_end = start;
+	if (granule_shift >= PUD_SHIFT &&
+	    compat_can_map_pud() &&
+	    ALIGN(start, PUD_SIZE) < ALIGN_DOWN(end, PUD_SIZE)) {
+		body_start = ALIGN(start, PUD_SIZE);
+		body_end = ALIGN_DOWN(end, PUD_SIZE);
+	}
+
+	const struct {
+		u64 first;
+		u64 last;
+		u32 order;
+	} parts[DAX_WB_PGMAPS_MAX] = {
+		{ start, body_start, PMD_ORDER },
+		{ body_start, body_end, PUD_ORDER },
+		{ body_end, end, PMD_ORDER },
+	};
+
+	void *data = NULL;
+	for (u32 idx = 0; idx < DAX_WB_PGMAPS_MAX; idx++) {
+		if (parts[idx].first == parts[idx].last)
+			continue;
+
+		struct dev_pagemap *pgmap = &areas->pgmaps[areas->pgmap_count];
+		memset(pgmap, 0, sizeof(*pgmap));
+		pgmap->type = MEMORY_DEVICE_GENERIC;
+		pgmap->nr_range = 1;
+		pgmap->range.start = parts[idx].first;
+		pgmap->range.end = parts[idx].last - 1;
+		pgmap->vmemmap_shift = parts[idx].order;
+
+		void *mapped = memremap_pages(pgmap, node);
+		if (IS_ERR(mapped)) {
+			dax_unmap_wb_area(areas);
+			return mapped;
+		}
+		areas->pgmap_count++;
+		/* The direct map is linear, so the first part's address carries on into the others. */
+		if (!data)
+			data = mapped;
+	}
+	return data;
 }
 
 /*
@@ -168,15 +242,16 @@ static int dax_map_split_areas(struct fs_sb_info *sbi, u64 phys_addr, u64 dev_si
 		return -ENOSPC;
 	}
 
-	const u64 wb_start = dax_read_wb_start(sbi, phys_addr, dev_size);
+	u32 granule_shift;
+	const u64 wb_start = dax_read_wb_start(sbi, phys_addr, dev_size, &granule_shift);
 
 	if (areas->refs) {
 		/* The boundary comes off the medium, so two mounts of one device agree unless the
 		 * superblock changed under them. Sharing a mapping split elsewhere would put the
 		 * pools where this mount does not expect them. */
-		if (areas->wb_start != wb_start) {
-			pr_err("%s is mapped with its boundary at 0x%llx, not 0x%llx\n", devname,
-			       areas->wb_start, wb_start);
+		if (areas->wb_start != wb_start || areas->granule_shift != granule_shift) {
+			pr_err("%s is mapped with its boundary at 0x%llx granule 2^%u, not 0x%llx granule 2^%u\n",
+			       devname, areas->wb_start, areas->granule_shift, wb_start, granule_shift);
 			return -EBUSY;
 		}
 		areas->refs++;
@@ -199,15 +274,8 @@ static int dax_map_split_areas(struct fs_sb_info *sbi, u64 phys_addr, u64 dev_si
 		return -EBUSY;
 	}
 
-	areas->pgmap.type = MEMORY_DEVICE_GENERIC;
-	areas->pgmap.nr_range = 1;
-	areas->pgmap.range.start = phys_addr + wb_start;
-	areas->pgmap.range.end = phys_addr + dev_size - 1;
-	/* Compound struct pages at PMD order, which is the granularity the region
-	 * layout is already aligned to. */
-	areas->pgmap.vmemmap_shift = PMD_ORDER;
-
-	data = memremap_pages(&areas->pgmap, dax_resolve_target_node(devname));
+	data = dax_map_wb_area(areas, phys_addr + wb_start, phys_addr + dev_size, granule_shift,
+			       dax_resolve_target_node(devname));
 	if (IS_ERR(data)) {
 		pr_err("ZONE_DEVICE pages refused for the data area of %s: %ld\n", devname, PTR_ERR(data));
 		iounmap(meta);
@@ -216,6 +284,7 @@ static int dax_map_split_areas(struct fs_sb_info *sbi, u64 phys_addr, u64 dev_si
 
 	areas->phys_base = phys_addr;
 	areas->wb_start = wb_start;
+	areas->granule_shift = granule_shift;
 	areas->meta = meta;
 	areas->data = data;
 	areas->refs = 1;
@@ -224,8 +293,8 @@ static int dax_map_split_areas(struct fs_sb_info *sbi, u64 phys_addr, u64 dev_si
 	sbi->meta_base = (void *)meta;
 	sbi->data_base = data;
 
-	pr_info("%s uncached at 0x%llx for %llu bytes, write-back at 0x%llx\n",
-		devname, phys_addr, wb_start, phys_addr + wb_start);
+	pr_info("%s uncached at 0x%llx for %llu bytes, write-back at 0x%llx in %u pgmap(s)\n",
+		devname, phys_addr, wb_start, phys_addr + wb_start, areas->pgmap_count);
 
 	return 0;
 }
@@ -295,7 +364,7 @@ void dax_release_areas(struct fs_sb_info *sbi)
 
 	/* One half came from ioremap and the other from memremap_pages, so each goes
 	 * back the way it came. */
-	memunmap_pages(&areas->pgmap);
+	dax_unmap_wb_area(areas);
 	iounmap(areas->meta);
 	memset(areas, 0, sizeof(*areas));
 }
@@ -312,7 +381,7 @@ void dax_exit(void)
 			continue;
 
 		pr_warn("dax: area at 0x%llx still held by %u mount(s) at unload\n", areas->phys_base, areas->refs);
-		memunmap_pages(&areas->pgmap);
+		dax_unmap_wb_area(areas);
 		iounmap(areas->meta);
 		memset(areas, 0, sizeof(*areas));
 	}

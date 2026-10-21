@@ -135,6 +135,42 @@ compat_vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page, bool wri
 }
 #endif
 
+/* From 6.15 a huge entry can map a refcounted folio. Before it, a devmap pfn entry is the form GUP
+ * follows back to the struct pages. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+#define compat_vmf_insert_folio_pmd(vmf, folio, write) vmf_insert_folio_pmd(vmf, folio, write)
+#ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+#define compat_vmf_insert_folio_pud(vmf, folio, write) vmf_insert_folio_pud(vmf, folio, write)
+#endif
+#else
+#include <linux/pfn_t.h>
+#define compat_folio_pfn_t(folio) phys_to_pfn_t(PFN_PHYS(folio_pfn(folio)), PFN_DEV | PFN_MAP)
+#define compat_vmf_insert_folio_pmd(vmf, folio, write) vmf_insert_pfn_pmd(vmf, compat_folio_pfn_t(folio), write)
+#ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+#define compat_vmf_insert_folio_pud(vmf, folio, write) vmf_insert_pfn_pud(vmf, compat_folio_pfn_t(folio), write)
+#endif
+#endif
+
+/* x86 maps a PUD entry only on a CPU with 1 GiB pages, which the generic check does not ask. */
+static inline bool compat_can_map_pud(void)
+{
+#if defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD) && defined(CONFIG_X86)
+	return boot_cpu_has(X86_FEATURE_GBPAGES);
+#else
+	return IS_ENABLED(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD);
+#endif
+}
+
+/* The default address search, which a file's own get_unmapped_area falls back to. 6.10 turned
+ * the per-mm hook into this call. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
+#define compat_get_unmapped_area(file, addr, len, pgoff, flags) \
+	mm_get_unmapped_area(current->mm, file, addr, len, pgoff, flags)
+#else
+#define compat_get_unmapped_area(file, addr, len, pgoff, flags) \
+	current->mm->get_unmapped_area(file, addr, len, pgoff, flags)
+#endif
+
 /* __iget() is an inline from 6.12 and a function no module may link before it. Both take the
  * same increment, and both want inode->i_lock held. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)

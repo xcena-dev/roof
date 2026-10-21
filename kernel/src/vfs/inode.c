@@ -123,6 +123,15 @@ static void inode_fill_from_entry(struct inode *inode, struct layout_rat_entry *
 }
 
 /*
+ * Core mm then treats a mapping of the file as dax: a huge fault whatever the THP setting, and an
+ * unmap that drops the folio references huge entries hold. GUP refuses FOLL_LONGTERM pins on it.
+ */
+static void inode_mark_dax(struct inode *inode)
+{
+	inode->i_flags |= S_DAX;
+}
+
+/*
  * iget_by_region - create or refresh the inode for RAT entry @region_id
  * @sb: Superblock
  * @region_id: RAT entry id, which is also what the ino is made from
@@ -206,6 +215,7 @@ static struct inode *iget_by_region(struct super_block *sb, u32 region_id)
 	inode->i_op = &inode_iops;
 	inode->i_fop = &file_fops;
 	inode->i_mapping->a_ops = &file_aops;
+	inode_mark_dax(inode);
 
 	unlock_new_inode(inode);
 	return inode;
@@ -294,6 +304,7 @@ struct inode *inode_new(struct super_block *sb, umode_t mode)
 		inode->i_op = &inode_iops;
 		inode->i_fop = &file_fops;
 		inode->i_mapping->a_ops = &file_aops;
+		inode_mark_dax(inode);
 	} else if (S_ISDIR(mode)) {
 		inode->i_op = &dir_iops;
 		inode->i_fop = &dir_fops;
