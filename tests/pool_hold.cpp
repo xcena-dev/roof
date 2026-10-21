@@ -60,6 +60,7 @@ void reply(std::string_view text)
             if (!asked)
             {
                 file->setRegionAttr(fsuser::RegionAttr_t{fsuser::CachePolicy::Writeback, fsuser::Placement::Paged});
+                // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores) a retry after a throw reads it
                 asked = true;
             }
             file->resize(bytes);

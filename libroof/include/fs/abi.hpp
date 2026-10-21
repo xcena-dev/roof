@@ -13,13 +13,13 @@
 #include <string_view>
 
 #include "fs/file.hpp"
-#include "fs/soname.hpp"
+#include "fs/soname.hpp"  // IWYU pragma: export
 
 // The exported function's name and the string dlsym is given for it, both built from the bare word
 // that the publishing pass rewrites. Nothing else here is a macro.
 #define FSUSER_C_NAME(verb) fsuser##_##verb
-#define FSUSER_STRING_(text) #text
-#define FSUSER_STRING(text) FSUSER_STRING_(text)
+#define FSUSER_STRINGIZE(text) #text
+#define FSUSER_STRING(text) FSUSER_STRINGIZE(text)
 #define FSUSER_WORD fsuser
 #define FSUSER_C_API_SYMBOL FSUSER_STRING(FSUSER_WORD) "_c_api_get"
 

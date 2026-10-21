@@ -43,6 +43,7 @@ TIDY_FLAGS=(-std=c++17 -O2 -DNDEBUG
             -I"$ROOT/tests"
             -I"$ROOT/common"
             -I"$ROOT/libroof/include"
+            -I"$BUILD_DIR/libroof/generated/include"
             -I"$ROOT/kernel/include"
             -I/usr/local/include)
 

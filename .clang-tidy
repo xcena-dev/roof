@@ -223,13 +223,10 @@ CheckOptions:
     value: 25
 
   # ── Macros ────────────────────────────────────────────────────────────────
-  # The style page bans macros except where one is needed, and requires a project prefix on
-  # the ones that are. This is that rule: CME_ and OBSERVE_ pass, everything else is flagged.
-  # Two idioms in src/observe need them. An X-macro expands one stage list into both an enum
-  # and its name table, and #name has no function equivalent. An instrumentation macro that
-  # compiles to ((void)0) drops its arguments unevaluated, which a function cannot do.
+  # A macro only where nothing else works, with the project prefix. The library's exported C name is
+  # pasted from the word the publishing pass rewrites, and token pasting has no function equivalent.
   - key: cppcoreguidelines-macro-usage.AllowedRegexp
-    value: '^(CME_|OBSERVE_)'
+    value: '^FSUSER_'
 
   # ── Deliberate discards ───────────────────────────────────────────────────
   # static_cast<void>(f()) is how C++ says "the answer is dropped on purpose", and it is what
