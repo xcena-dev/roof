@@ -14,6 +14,7 @@
 #include <exception>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "config/internal/mount_table.hpp"
@@ -161,6 +162,41 @@ void refuseBadMounts(fsdaemon::probe::Context& ctx)
     ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    device: /dev/dax0.0\n"
                             "  - point: /mnt/one\n    device: /dev/dax1.0\n"),
               "a point listed twice is refused");
+}
+
+// One mount whose point and device are written between @quote marks, or bare when @quote is empty.
+std::string makeQuotedMountConfig(std::string_view quote)
+{
+    return std::string{"mounts:\n  - point: "}
+        .append(quote)
+        .append("/mnt/rooffs")
+        .append(quote)
+        .append("\n    device: ")
+        .append(quote)
+        .append("/dev/dax0.0")
+        .append(quote)
+        .append("\n");
+}
+
+// A quoted scalar reads as its content under policy.path, so a mount path reads the same way.
+void checkQuotedMounts(fsdaemon::probe::Context& ctx)
+{
+    const std::vector<std::string> expected{"/mnt/rooffs /dev/dax0.0"};
+
+    const TempFile policy{"policy:\n  path: \"/custom/policy.rego\"\n", "daemon-config"};
+    ctx.check(Config::load(policy.getPath()).getPolicyPath() == "/custom/policy.rego",
+              "policy.path drops its double quotes");
+
+    const TempFile bare{makeQuotedMountConfig(""), "daemon-config"};
+    ctx.check(Config::load(bare.getPath()).findSetting("mounts") == expected, "a bare mount point and device read");
+
+    const TempFile doubled{makeQuotedMountConfig("\""), "daemon-config"};
+    ctx.check(Config::load(doubled.getPath()).findSetting("mounts") == expected,
+              "a double-quoted mount point and device drop their quotes");
+
+    const TempFile single{makeQuotedMountConfig("'"), "daemon-config"};
+    ctx.check(Config::load(single.getPath()).findSetting("mounts") == expected,
+              "a single-quoted mount point and device drop their quotes");
 }
 
 void refuseUntrustedFile(fsdaemon::probe::Context& ctx)
@@ -317,6 +353,7 @@ int main()
             checkTraceSwitch(ctx);
             checkListBlocks(ctx);
             refuseBadMounts(ctx);
+            checkQuotedMounts(ctx);
             refuseUntrustedFile(ctx);
             checkFindSetting(ctx);
             checkReloadableEdits(ctx);

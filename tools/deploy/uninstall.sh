@@ -203,9 +203,9 @@ rmdir --ignore-fail-on-non-empty "$MODULE_DIR" 2>/dev/null || true
 rm -f "${HELPER_DIR}/mount.${FS_NAME}" "${HELPER_DIR}/umount.${FS_NAME}"
 
 # The library an application links, and what it needs to compile against.
-rm -f "${PREFIX}/lib/lib${LIB_NAME}.a" "${PREFIX}/lib/pkgconfig/lib${LIB_NAME}.pc"
-rm -rf "${PREFIX}/include/${LIB_NAME}"
-rmdir --ignore-fail-on-non-empty "${PREFIX}/lib/pkgconfig" 2>/dev/null || true
+removeLibraryFiles "$PREFIX" "$LIB_NAME"
+# The loader cache names the shared library until it is rebuilt.
+ldconfig
 echo "uninstall.sh: the module file, the helpers and the library are gone"
 
 # ── the group ───────────────────────────────────────────────────────────

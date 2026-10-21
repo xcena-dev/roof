@@ -266,6 +266,10 @@ set_tests_properties(unmount_held_turn PROPERTIES LABELS lifecycle SKIP_RETURN_C
 # The decisions the deploy scripts record and read back, on scratch files. No root and no mount.
 add_test(NAME test_deploy_state COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_deploy_state.sh)
 
+# Installs the library into a scratch prefix and removes it the way uninstall.sh does, then fails on
+# any file left under the prefix. No root and no mount.
+add_test(NAME uninstall_removes_library COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/uninstall_removes_library.sh)
+
 # Fills both mounts from both nodes at once and reads every extent while they stand, so nothing
 # else may be placing meanwhile. No root.
 add_test(NAME rat_place_race COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/rat_place_race.sh)

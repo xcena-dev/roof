@@ -31,6 +31,18 @@ namespace fsdaemon::util
     return text;
 }
 
+// @text without one pair of matching quotes around it, single or double, since a YAML scalar may be
+// written either way.
+[[nodiscard]] inline std::string_view dropQuotes(std::string_view text) noexcept
+{
+    if (text.size() > 1 && (text.front() == '"' || text.front() == '\'') && text.back() == text.front())
+    {
+        text.remove_prefix(1);
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
 // Whether @text opens with @prefix.
 [[nodiscard]] inline bool hasPrefix(std::string_view text, std::string_view prefix) noexcept
 {

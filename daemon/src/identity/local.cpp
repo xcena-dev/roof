@@ -51,16 +51,6 @@ struct RawRule_t
     Identity_t identity;
 };
 
-std::string_view stripQuotes(std::string_view text)
-{
-    if (text.size() > 1 && (text.front() == '"' || text.front() == '\'') && text.back() == text.front())
-    {
-        text.remove_prefix(1);
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
 // A rule follows its section headers in order, so a scalar belongs to whichever of match or identity
 // was named last. That is the whole of the layout the rules file uses.
 enum class Section
@@ -94,7 +84,7 @@ Section takeKey(RawRule_t& rule, Section section, std::string_view token)
         throw BridgeError{std::string{"rules: a rule has no section '"}.append(key).append("'")};
     }
     const std::string keyText{key};
-    const std::string valueText{stripQuotes(value)};
+    const std::string valueText{util::dropQuotes(value)};
     if (section == Section::Match)
     {
         rule.match.emplace_back(keyText, valueText);

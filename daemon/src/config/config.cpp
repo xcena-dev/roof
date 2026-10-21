@@ -189,7 +189,7 @@ std::vector<Mount_t> parseMounts(const std::vector<std::string_view>& rows, cons
             throw refuse(std::string{"no mount item holds '"}.append(field).append("'"));
         }
         const auto key = util::trimSpace(field.substr(0, colon));
-        std::string value{util::trimSpace(field.substr(colon + 1))};
+        std::string value{util::dropQuotes(util::trimSpace(field.substr(colon + 1)))};
         if (key == "point")
         {
             mounts.back().point = std::move(value);

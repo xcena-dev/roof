@@ -32,3 +32,13 @@ STATEFILE="${STATEDIR}/deploy.state"
 # Scratch trees, kept out of the source tree so a root build leaves nothing its owner cannot write.
 TOOLS_BUILD="${TOOLS_BUILD:-/tmp/${FS_NAME}-tools-build}"
 LIB_BUILD="${LIB_BUILD:-/tmp/${FS_NAME}-lib-build}"
+
+# Removes the static and shared library, its headers and its pc file from under @prefix, for the
+# library named @libName.
+removeLibraryFiles() {
+	local prefix="$1" libName="$2"
+	rm -f "${prefix}/lib/lib${libName}.a" "${prefix}/lib/lib${libName}.so" "${prefix}/lib/lib${libName}.so."* \
+		"${prefix}/lib/pkgconfig/lib${libName}.pc"
+	rm -rf "${prefix}/include/${libName}"
+	rmdir --ignore-fail-on-non-empty "${prefix}/lib/pkgconfig" 2>/dev/null || true
+}

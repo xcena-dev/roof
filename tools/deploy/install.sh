@@ -229,6 +229,9 @@ echo "install.sh: ${MODULE_DIR}/${FS_NAME}.ko installed"
 
 cmake --install "$TOOLS_BUILD" > /dev/null
 cmake --install "$LIB_BUILD" --prefix "$PREFIX" > /dev/null
+# A program that dlopens the shared library finds it through the loader cache, which a new file in
+# the prefix does not update.
+ldconfig
 echo "install.sh: mount.${FS_NAME} and lib${LIB_NAME} installed under ${PREFIX}"
 
 # ── the daemon and the config ───────────────────────────────────────────
