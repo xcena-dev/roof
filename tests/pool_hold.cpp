@@ -43,7 +43,7 @@ void reply(std::string_view text)
 
 // "placed <pieces>" or "refused <errno>". EAGAIN is retried until @patience runs out, since that is a
 // turn a dead peer still holds.
-[[nodiscard]] std::string placePaged(const std::string& path, std::uint64_t bytes, std::chrono::seconds patience)
+[[nodiscard]] std::string placePaged(std::string_view path, std::uint64_t bytes, std::chrono::seconds patience)
 {
     constexpr std::chrono::milliseconds Retry{200};
     const auto until = std::chrono::steady_clock::now() + patience;
@@ -79,7 +79,7 @@ void reply(std::string_view text)
 }
 
 // Writes the pattern through a mapping and reads it back through read(), as test_paged_extents does.
-[[nodiscard]] bool verifyPaged(const Mount& mount, const std::string& name, const Fragments_t& fragments)
+[[nodiscard]] bool verifyPaged(const Mount& mount, std::string_view name, const Fragments_t& fragments)
 {
     auto file = mount.open(name, O_RDWR);
     {
@@ -90,7 +90,7 @@ void reply(std::string_view text)
            fsuser::tests::readsWhole(file, fragments.holeBytes);
 }
 
-[[nodiscard]] std::string unlinkName(const Mount& mount, const std::string& name)
+[[nodiscard]] std::string unlinkName(const Mount& mount, std::string_view name)
 {
     try
     {
@@ -176,11 +176,7 @@ void reply(std::string_view text)
 int main(int argc, char** argv)
 {
     constexpr std::int32_t UsageStatus = 2;
-    std::vector<std::string_view> args;
-    for (std::int32_t index = 1; index < argc; ++index)
-    {
-        args.emplace_back(argv[index]);
-    }
+    const std::vector<std::string_view> args{argv + 1, argv + argc};
 
     try
     {
@@ -200,7 +196,7 @@ int main(int argc, char** argv)
             {
                 return UsageStatus;
             }
-            const auto answer = placePaged(std::string{args[1]}, *bytes, std::chrono::seconds{0});
+            const auto answer = placePaged(args[1], *bytes, std::chrono::seconds{0});
             reply(answer);
             return answer.rfind("placed", 0) == 0 ? 0 : 1;
         }

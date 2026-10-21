@@ -200,7 +200,7 @@ RegionAttr_t File::readRegionAttr()
 {
     requireOpen("region_attr_get");
 
-    RegionAttr_t taken;
+    RegionAttr_t taken{};
     requireDone(abiTable().readRegionAttr(held_, &taken), "region_attr_get");
 
     return taken;

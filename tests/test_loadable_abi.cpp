@@ -8,7 +8,6 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <cstdint>
@@ -95,15 +94,16 @@ void checkOnOtherFile(fsuser::tests::Report& report, const fsuser::CApi_t& entry
 {
     report.section("a descriptor of a file that is not on the mount");
 
-    const std::int32_t other = ::open(NotRoofFile, O_RDWR | O_CLOEXEC);
-    report.check("the other file opens", other >= 0);
-    if (other < 0)
+    const fsuser::File otherFile{::open(NotRoofFile, O_RDWR | O_CLOEXEC)};
+    report.check("the other file opens", otherFile.isOpen());
+    if (!otherFile.isOpen())
     {
         return;
     }
 
+    const std::int32_t other = otherFile.get();
     const auto read = fsuser::Permission::Read;
-    fsuser::RegionAttr_t attr;
+    fsuser::RegionAttr_t attr{};
     report.check("set default permission answers -ENOTTY", entry.setDefaultPermission(other, read) == -ENOTTY);
     report.check("set region attr answers -ENOTTY", entry.setRegionAttr(other, attr) == -ENOTTY);
     report.check("read region attr answers -ENOTTY", entry.readRegionAttr(other, &attr) == -ENOTTY);
@@ -113,8 +113,6 @@ void checkOnOtherFile(fsuser::tests::Report& report, const fsuser::CApi_t& entry
                  entry.grantRole(other, RoleGroup, RoleName, read, fsuser::AnyNode) == -ENOTTY);
     report.check("revoke role answers -ENOTTY", entry.revokeRole(other, RoleGroup, RoleName, fsuser::AnyNode) == -ENOTTY);
     report.check("ask permission answers -ENOTTY", entry.askPermission(other, read) == -ENOTTY);
-
-    ::close(other);
 }
 
 }  // namespace
@@ -139,7 +137,7 @@ int main(int argc, char** argv)
             report.check("the table names its size and version",
                          table->size >= sizeof(fsuser::CApi_t) && table->abiVersion == fsuser::AbiVersion);
 
-            auto mount = fsuser::tests::Mount(mounts.first());
+            const fsuser::tests::Mount mount{mounts.first()};
             const auto name = caseName("loadable_abi");
             auto file = mount.open(name, O_CREAT | O_RDWR, 0644);
             checkRegionAttr(report, *table, file);

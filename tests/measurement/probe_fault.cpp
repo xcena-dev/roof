@@ -8,13 +8,11 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -23,14 +21,18 @@
 #include <ratio>
 #include <string>
 #include <string_view>
-#include <system_error>
+
+#include "probe_common.hpp"
 
 namespace
 {
 
-using Clock = std::chrono::steady_clock;
+using fsuser::probes::MiBBytes;
+using fsuser::probes::PageBytes;
+using fsuser::probes::parseUnsigned;
+using fsuser::probes::readMinorFaults;
 
-constexpr std::uint64_t PageBytes = 4096;
+using Clock = std::chrono::steady_clock;
 
 // A touch slower than the last bucket counts toward the totals only, so a rank there reports the max.
 constexpr std::chrono::nanoseconds BucketWidth{10};
@@ -82,13 +84,6 @@ struct Histogram_t
         return slowest;
     }
 };
-
-[[nodiscard]] std::uint64_t readMinorFaults()
-{
-    struct rusage usage = {};
-    ::getrusage(RUSAGE_SELF, &usage);
-    return static_cast<std::uint64_t>(usage.ru_minflt);
-}
 
 // One touch per page in address order. A write stores one byte, which also dirties the page.
 [[nodiscard]] Histogram_t touchPages(volatile std::uint8_t* base, std::uint64_t pages, Access access)
@@ -174,10 +169,8 @@ int main(int argc, char** argv)
         return UsageStatus;
     }
 
-    const std::string_view mibText{argv[2]};
-    std::uint64_t mib = 0;
-    const auto parsed = std::from_chars(mibText.data(), mibText.data() + mibText.size(), mib);
-    if (parsed.ec != std::errc{} || parsed.ptr != mibText.data() + mibText.size() || mib == 0)
+    const auto mib = parseUnsigned(argv[2]);
+    if (!mib || *mib == 0)
     {
         std::fprintf(stderr, "mib must be a positive whole number\n");
         return UsageStatus;
@@ -203,8 +196,7 @@ int main(int argc, char** argv)
         std::perror("open");
         return EXIT_FAILURE;
     }
-    constexpr std::uint64_t MiBBytes = 1024ULL * 1024ULL;
-    const std::int32_t status = mapAndTouch(handle, mib * MiBBytes, !devdax, access);
+    const std::int32_t status = mapAndTouch(handle, *mib * MiBBytes, !devdax, access);
     ::close(handle);
     if (!devdax)
     {

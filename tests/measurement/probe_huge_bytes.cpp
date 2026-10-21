@@ -10,13 +10,11 @@
 #include <fcntl.h>
 #include <linux/io_uring.h>
 #include <sys/mman.h>
-#include <sys/resource.h>
 #include <sys/syscall.h>  // IWYU pragma: keep (the __NR_ numbers, which live in an arch header under it)
 #include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
-#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,15 +23,20 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
+
+#include "probe_common.hpp"
 
 namespace
 {
 
-constexpr std::uint64_t PageBytes = 4096;
-constexpr std::uint64_t PmdBytes = 2ULL * 1024ULL * 1024ULL;
-constexpr std::uint64_t PudBytes = 1024ULL * 1024ULL * 1024ULL;
+using fsuser::probes::MiBBytes;
+using fsuser::probes::PageBytes;
+using fsuser::probes::parseUnsigned;
+using fsuser::probes::readMinorFaults;
+
+constexpr std::uint64_t PmdBytes = 2 * MiBBytes;
+constexpr std::uint64_t PudBytes = 1024 * MiBBytes;
 constexpr std::uint64_t WordBytes = sizeof(std::uint64_t);
 
 [[nodiscard]] std::uint64_t computeWord(std::uint64_t wordIndex)
@@ -41,24 +44,6 @@ constexpr std::uint64_t WordBytes = sizeof(std::uint64_t);
     constexpr std::uint64_t MixFactor = 0x9E3779B97F4A7C15ULL;
     constexpr std::uint32_t MixShift = 17;
     return ((wordIndex + 1) * MixFactor) ^ (wordIndex << MixShift);
-}
-
-[[nodiscard]] std::optional<std::uint64_t> parseUnsigned(std::string_view text)
-{
-    std::uint64_t value = 0;
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-    {
-        return std::nullopt;
-    }
-    return value;
-}
-
-[[nodiscard]] std::uint64_t readMinorFaults()
-{
-    struct rusage usage = {};
-    ::getrusage(RUSAGE_SELF, &usage);
-    return static_cast<std::uint64_t>(usage.ru_minflt);
 }
 
 // One /proc/meminfo field in kB, or 0 when it is missing.
@@ -103,7 +88,7 @@ constexpr std::uint64_t WordBytes = sizeof(std::uint64_t);
 // the kernel has to split its copy.
 [[nodiscard]] std::uint64_t countReadMismatches(std::int32_t handle, std::uint64_t bytes)
 {
-    constexpr std::uint64_t ReadBytes = (3 * 1024ULL * 1024ULL) + PageBytes;
+    constexpr std::uint64_t ReadBytes = (3 * MiBBytes) + PageBytes;
     std::vector<std::uint64_t> chunk(ReadBytes / WordBytes);
     std::uint64_t mismatched = 0;
     for (std::uint64_t offset = 0; offset < bytes; offset += ReadBytes)
@@ -292,7 +277,6 @@ int main(int argc, char** argv)
     // Line by line, so what was printed before a fault kills the process is still in the log.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
-    constexpr std::uint64_t MiBBytes = 1024ULL * 1024ULL;
     const auto mib = parseUnsigned(argv[2]);
     if (!mib || *mib * MiBBytes < 2 * PmdBytes)
     {

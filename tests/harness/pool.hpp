@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <unordered_set>
@@ -44,7 +45,7 @@ struct Fragments_t
 };
 
 // Created and placed contiguous, or false with the name gone again when no gap holds @bytes.
-[[nodiscard]] inline bool placeContiguous(const Mount& mount, const std::string& name, std::uint64_t bytes)
+[[nodiscard]] inline bool placeContiguous(const Mount& mount, std::string_view name, std::uint64_t bytes)
 {
     {
         auto file = mount.open(name, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -63,6 +64,14 @@ struct Fragments_t
     }
     mount.unlink(name);
     return false;
+}
+
+inline void unlinkAll(const Mount& mount, const std::vector<std::string>& names)
+{
+    for (const auto& name : names)
+    {
+        mount.unlink(name);
+    }
 }
 
 // Bounded, so a free that never lands ends the case with a failed check instead of hanging it.
@@ -162,10 +171,7 @@ struct Fragments_t
         made.holes.push_back({offset, made.granule});
     }
 
-    for (const auto& name : cut)
-    {
-        mount.unlink(name);
-    }
+    unlinkAll(mount, cut);
     made.holeBytes = std::uint64_t{holes} * made.granule;
     if (!waitForWritebackFree(made.holeBytes))
     {
@@ -177,14 +183,8 @@ struct Fragments_t
 // Every name the fragmentation made that still stands, so the space goes back before the case ends.
 inline void releaseFragments(const Mount& mount, const Fragments_t& fragments)
 {
-    for (const auto& name : fragments.keepers)
-    {
-        mount.unlink(name);
-    }
-    for (const auto& name : fragments.fillers)
-    {
-        mount.unlink(name);
-    }
+    unlinkAll(mount, fragments.keepers);
+    unlinkAll(mount, fragments.fillers);
 }
 
 // One word per 8 bytes, each its file offset mixed with @seed, so a word read from the wrong place

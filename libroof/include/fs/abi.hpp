@@ -3,10 +3,9 @@
 // fs/abi.hpp -- what a program needs to load the shared library with dlopen and call it.
 //
 // The library exports one C function, which hands back a table of verbs for an interface version.
-// The soname, the version, the table and the types its verbs take are all here, so a caller names
-// nothing of the library but this header. Each verb works on a descriptor the caller owns and never
-// closes. It returns 0 or a negative errno and never throws. Opening, resizing, mapping and
-// unlinking are plain syscalls and are not verbs.
+// A caller names nothing of the library but this header. Each verb works on a descriptor the caller
+// owns and never closes, returns 0 or a negative errno, and never throws. Opening, resizing,
+// mapping and unlinking are plain syscalls and are not verbs.
 
 #pragma once
 

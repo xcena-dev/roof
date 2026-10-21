@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -31,9 +32,13 @@ using fsuser::tests::Mount;
 using fsuser::tests::PagedSeed;
 using fsuser::tests::Piece_t;
 using fsuser::tests::Report;
+using fsuser::tests::unlinkAll;
 
 // The sizes the run sections place in, large enough that a granule up to 1 GiB divides them.
 constexpr std::uint64_t UnitBytes = 1ULL << 30;
+
+// The units in the one free run that the run sections carve.
+constexpr std::uint64_t RunUnits = 5;
 
 // One free run and nothing else free in the write-back pool, and the fillers around it.
 struct Gap_t
@@ -52,7 +57,7 @@ struct Gap_t
     return pieces;
 }
 
-[[nodiscard]] std::optional<std::uint64_t> readFirstOffset(const std::string& name)
+[[nodiscard]] std::optional<std::uint64_t> readFirstOffset(std::string_view name)
 {
     const auto pieces = fsuser::tests::readPiecesOf(name);
     if (pieces.empty())
@@ -62,14 +67,14 @@ struct Gap_t
     return pieces.front().offset;
 }
 
-void placePaged(const Mount& mount, const std::string& name, std::uint64_t bytes)
+void placePaged(const Mount& mount, std::string_view name, std::uint64_t bytes)
 {
     auto file = mount.open(name, O_CREAT | O_EXCL | O_RDWR, 0644);
     file.setRegionAttr(fsuser::RegionAttr_t{fsuser::CachePolicy::Writeback, fsuser::Placement::Paged});
     file.resize(bytes);
 }
 
-void checkContiguousRefused(Report& report, const Mount& mount, const std::string& name, std::uint64_t bytes)
+void checkContiguousRefused(Report& report, const Mount& mount, std::string_view name, std::uint64_t bytes)
 {
     report.checkRefusedWith("a contiguous region of that size answers ENOSPC", std::errc::no_space_on_device,
                             [&]
@@ -77,14 +82,6 @@ void checkContiguousRefused(Report& report, const Mount& mount, const std::strin
                                 mount.open(name, O_CREAT | O_RDWR, 0644).resize(bytes);
                             });
     mount.unlink(name);
-}
-
-void unlinkAll(const Mount& mount, const std::vector<std::string>& names)
-{
-    for (const auto& name : names)
-    {
-        mount.unlink(name);
-    }
 }
 
 // A contiguous region of @bytes placed first marks where the run will be, then the rest of the pool
@@ -111,7 +108,7 @@ void unlinkAll(const Mount& mount, const std::vector<std::string>& names)
 
 // Writes through one mapping, then reads back across each granule boundary through read() and
 // through a second mapping.
-void checkBytes(Report& report, const Mount& mount, const std::string& name, std::uint64_t bytes,
+void checkBytes(Report& report, const Mount& mount, std::string_view name, std::uint64_t bytes,
                 std::uint64_t granule)
 {
     auto file = mount.open(name, O_RDWR);
@@ -168,8 +165,6 @@ void checkHoles(Report& report, const Mount& mount)
 // takes it whole from the high end, and only one that fits nowhere whole takes A's place as well.
 void checkWholeBeforePieces(Report& report, const Mount& mount)
 {
-    constexpr std::uint64_t RunUnits = 5;
-
     report.section("a paged region takes a whole gap before it takes pieces");
     const auto stem = caseName("paged_w_");
     const auto gap = carveGap(mount, stem, RunUnits * UnitBytes);
@@ -214,8 +209,6 @@ void checkWholeBeforePieces(Report& report, const Mount& mount)
 // pieces of both, and a contiguous one of the same size answers ENOSPC.
 void checkBlockInMiddle(Report& report, const Mount& mount)
 {
-    constexpr std::uint64_t RunUnits = 5;
-
     report.section("a block in the middle of a run splits a paged region and refuses a contiguous one");
     const auto stem = caseName("paged_m_");
     const auto gap = carveGap(mount, stem, RunUnits * UnitBytes);

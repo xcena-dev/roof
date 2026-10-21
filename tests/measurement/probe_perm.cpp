@@ -31,6 +31,7 @@
 #include <string_view>
 #include <vector>
 
+#include "fs/file.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 #include "harness/sysfs.hpp"

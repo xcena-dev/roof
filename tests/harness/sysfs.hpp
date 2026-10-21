@@ -35,6 +35,7 @@ constexpr const char* RegionInfoPath = "/sys/fs/" FS_NAME_STR "/region_info";
 constexpr const char* GcStatusPath = "/sys/fs/" FS_NAME_STR "/gc_status";
 constexpr const char* PermInfoPath = "/sys/fs/" FS_NAME_STR "/perm_info";
 constexpr const char* PoolInfoPath = "/sys/fs/" FS_NAME_STR "/pool_info";
+constexpr const char* ExtentsDirPath = "/sys/fs/" FS_NAME_STR "/extents/";
 
 // Under the mount's own directory, so one file is one mount's reading of the table.
 [[nodiscard]] inline std::string bootstrapDumpPath(std::uint32_t nodeId)
@@ -175,13 +176,15 @@ struct RegionInfo_t
     return table ? std::move(table->rows) : std::vector<RegionRow_t>{};
 }
 
+constexpr std::int32_t HexBase = 16;
+constexpr std::string_view HexPrefix{"0x"};
+
 // The whole of @text as one number in @base, or nullopt. A hex value may carry its 0x.
 [[nodiscard]] inline std::optional<std::uint64_t> parseUnsigned(std::string_view text, std::int32_t base = 10)
 {
-    constexpr std::int32_t Hex = 16;
-    if (base == Hex && text.rfind("0x", 0) == 0)
+    if (base == HexBase && text.rfind(HexPrefix, 0) == 0)
     {
-        text.remove_prefix(2);
+        text.remove_prefix(HexPrefix.size());
     }
     std::uint64_t value = 0;
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, base);
@@ -204,15 +207,9 @@ struct Piece_t
     }
 };
 
-[[nodiscard]] inline std::string extentsPath(std::int64_t entry)
-{
-    return "/sys/fs/" FS_NAME_STR "/extents/" + std::to_string(entry);
-}
-
 // The pieces of the region named @name in file order, or none when no row carries the name.
-[[nodiscard]] inline std::vector<Piece_t> readPiecesOf(const std::string& name)
+[[nodiscard]] inline std::vector<Piece_t> readPiecesOf(std::string_view name)
 {
-    constexpr std::int32_t Hex = 16;
     std::vector<Piece_t> pieces;
     for (const auto& row : readRegionRows())
     {
@@ -220,12 +217,12 @@ struct Piece_t
         {
             continue;
         }
-        std::ifstream source{extentsPath(row.entry)};
+        std::ifstream source{std::string{ExtentsDirPath}.append(std::to_string(row.entry))};
         std::string line;
         while (std::getline(source, line))
         {
             const auto fields = splitOnTabs(line);
-            const auto offset = fields.size() == 2 ? parseUnsigned(fields[0], Hex) : std::nullopt;
+            const auto offset = fields.size() == 2 ? parseUnsigned(fields[0], HexBase) : std::nullopt;
             const auto length = fields.size() == 2 ? parseUnsigned(fields[1]) : std::nullopt;
             if (offset && length)
             {
