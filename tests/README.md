@@ -143,4 +143,3 @@ It checks that the mount comes down and that no task is left in uninterruptible 
 ## Two hosts
 
 Every case runs on one host, where a peer is a second mount of the same device.
-A run across two machines follows `multi/README.md`.
