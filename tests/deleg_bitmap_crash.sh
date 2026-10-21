@@ -16,6 +16,8 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 . "${ROOT}/fsname"
 # shellcheck source=/dev/null
 . "${ROOT}/shell/units.sh"
+# shellcheck source=/dev/null
+. "${ROOT}/shell/kernel_log.sh"
 
 MODULE="${FS_NAME}"
 PARAM_DIR="/sys/module/${MODULE}/parameters"
@@ -291,10 +293,10 @@ EOF
 crashOnDeadNode()
 {
     local point="$1" label="$2" name="$3" mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     printf '%s' "$point" >"${PARAM_DIR}/region_inject_crash_point"
     mapperOn "$DEAD_MOUNT" "$name" "${@:4}" && fail "${label}: the call that died reported success"
-    if dmesg | tail -n +"$mark" | grep -q "died at crash point ${point}"; then
+    if loggedSince "$mark" "died at crash point ${point}"; then
         pass "${label}: node ${DEAD_NODE} died at crash point ${point}"
         return 0
     fi

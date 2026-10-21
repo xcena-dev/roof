@@ -16,6 +16,8 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 . "${ROOT}/fsname"
 # shellcheck source=/dev/null
 . "${ROOT}/shell/units.sh"
+# shellcheck source=/dev/null
+. "${ROOT}/shell/kernel_log.sh"
 
 MODULE="${FS_NAME}"
 PARAM_DIR="/sys/module/${MODULE}/parameters"
@@ -187,10 +189,10 @@ runLive()
 runDead()
 {
     local mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     printf '2' >"${PARAM_DIR}/region_inject_crash_point"
     place "${DEAD_MOUNT}/held-turn-dead-$$" 2>/dev/null && fail "dead: the placement that died reported success"
-    if dmesg | tail -n +"$mark" | grep -q "died at crash point 2"; then
+    if loggedSince "$mark" "died at crash point 2"; then
         pass "dead: node ${DEAD_NODE} died holding the turn of a placement"
     else
         fail "dead: the crash point did not fire"

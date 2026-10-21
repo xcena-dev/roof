@@ -23,6 +23,8 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 . "${ROOT}/fsname"
 # shellcheck source=/dev/null
 . "${ROOT}/shell/units.sh"
+# shellcheck source=/dev/null
+. "${ROOT}/shell/kernel_log.sh"
 
 MODULE="${FS_NAME}"
 PARAM_DIR="/sys/module/${MODULE}/parameters"
@@ -129,7 +131,7 @@ waitForTakenCount()
 runFullTable()
 {
     local mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     local free_slots=$((256 - $(takenCount "$LIVE_NODE")))
 
     # One process owns every filler, so the unlink that dies comes from the process that created it.
@@ -162,7 +164,7 @@ EOF
     printf '4' >"${PARAM_DIR}/region_inject_crash_point"
     touch "${WORK}/armed"
     wait "$filler"
-    if dmesg | tail -n +"$mark" | grep -q "died at crash point 4"; then
+    if loggedSince "$mark" "died at crash point 4"; then
         pass "full: node ${DEAD_NODE} died with the last slot freed and its bit still set"
     else
         fail "full: the crash point did not fire"
@@ -210,7 +212,7 @@ waitForTrust()
 runBlankSummary()
 {
     local mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     local unit
     unit="$(unitNameFor "$DEAD_MOUNT")"
 
@@ -224,7 +226,7 @@ runBlankSummary()
     systemctl start "${DAEMON_NAME}@${DEAD_NODE}.service"
     sleep 2
 
-    if dmesg | tail -n +"$mark" | grep -q "RAT summary disagrees"; then
+    if loggedSince "$mark" "RAT summary disagrees"; then
         pass "blank: the mount noticed the zeroed summary"
     else
         fail "blank: the mount did not notice the zeroed summary"
@@ -314,7 +316,7 @@ runPoint()
 {
     local point="$1" what="$2"
     local mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     local victim="${DEAD_MOUNT}/summary-crash-${point}"
     local taken_before
     taken_before="$(takenCount "$LIVE_NODE")"
@@ -332,7 +334,7 @@ runPoint()
         ;;
     esac
 
-    if dmesg | tail -n +"$mark" | grep -q "died at crash point ${point}"; then
+    if loggedSince "$mark" "died at crash point ${point}"; then
         pass "P${point}: node ${DEAD_NODE} died ${what}"
     else
         fail "P${point}: the crash point did not fire"
@@ -395,7 +397,7 @@ runPoint()
         else
             fail "P${point}: the summary stayed out of step for ${RECOVERY_WAIT_S}s"
         fi
-        if dmesg | tail -n +"$mark" | grep -q "RAT summary repaired"; then
+        if loggedSince "$mark" "RAT summary repaired"; then
             pass "P${point}: the sweep logged its repair"
         else
             note "P${point}: no repair line; the allocator or a free may have closed the gap first"
@@ -464,11 +466,11 @@ runPagedPoint()
     note "${label}: ${bytes} bytes of holes, ${pieces} pieces expected"
 
     local mark
-    mark=$(($(dmesg | wc -l) + 1))
+    mark="$(logMark)"
     printf '%s' "$point" >"${PARAM_DIR}/region_inject_crash_point"
     asUser "$POOL_HOLD" place "${DEAD_MOUNT}/paged-crash-${point}" "$bytes" >/dev/null 2>&1 &&
         fail "${label}: the placement that died reported success"
-    if dmesg | tail -n +"$mark" | grep -q "died at crash point ${point}"; then
+    if loggedSince "$mark" "died at crash point ${point}"; then
         pass "${label}: node ${DEAD_NODE} died ${what}"
     else
         fail "${label}: the crash point did not fire"
