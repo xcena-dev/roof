@@ -87,11 +87,8 @@ struct region_pool_usage {
 
 s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out);
 
-/* Region initialization (called from ftruncate path).
- *
- * @opts->uncached takes the pool the device maps uncached, where a mapping carries no struct pages
- * and so cannot be pinned for DMA. @opts->paged lets the region lie in pieces, in the write-back pool
- * only. @spans comes from region_alloc_spans. */
+/* Region placement, called from ftruncate. @opts->uncached takes the uncached pool, whose mappings
+ * carry no struct pages to pin. @opts->paged allows pieces, in the write-back pool only. */
 s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
 		       const struct region_placement_opts *opts, struct region_span *spans);
 

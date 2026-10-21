@@ -1001,8 +1001,7 @@ static s32 file_ioctl_region_attr_get(struct fs_sb_info *sbi, const struct fs_in
 }
 
 /* Required perm for an ioctl precheck. Zero where none belongs here: the permission writers check
- * next to their own write, the ask is itself the check, and the attribute query names only how the
- * region lies. */
+ * next to their own write, the ask is itself the check, and the attribute query only reads. */
 static u16 file_ioctl_required_perm(unsigned int cmd)
 {
 	switch (cmd) {

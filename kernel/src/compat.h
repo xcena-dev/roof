@@ -161,8 +161,8 @@ static inline bool compat_can_map_pud(void)
 #endif
 }
 
-/* The default address search, which a file's own get_unmapped_area falls back to. 6.10 turned
- * the per-mm hook into this call. */
+/* The default address search a file's own get_unmapped_area falls back to: mm_get_unmapped_area
+ * from 6.10, the per-mm hook before it. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
 #define compat_get_unmapped_area(file, addr, len, pgoff, flags) \
 	mm_get_unmapped_area(current->mm, file, addr, len, pgoff, flags)
