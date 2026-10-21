@@ -42,3 +42,6 @@ target_compile_options(probe_devdax PRIVATE -Wall -Wextra -Wconversion -Wsign-co
 # Plain syscalls, so a device_dax chardev and a file on a mount go through the same timing code.
 add_executable(probe_fault probe_fault.cpp)
 target_compile_options(probe_fault PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
+
+add_executable(probe_huge_bytes probe_huge_bytes.cpp)
+target_compile_options(probe_huge_bytes PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
