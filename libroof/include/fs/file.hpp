@@ -222,11 +222,6 @@ private:
     // so none of them hands -1 to the kernel.
     void requireOpen(std::string_view verb) const;
 
-    // Every perm ioctl differs only in the command and which fields the kernel reads, so the
-    // fields travel loose rather than as a record the caller would need the uapi header to name.
-    void sendPermRequest(std::uint32_t command, std::uint32_t uid, std::uint32_t gid,
-                         Permission perms, std::string_view named);
-
 private:
     std::int32_t held_{-1};
 };

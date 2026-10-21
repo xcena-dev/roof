@@ -32,7 +32,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(FS_LIB_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # The directory an #include names. Neutral here, the filesystem's own in what ships.
 set(FS_HEADER_DIR fs)
-set(FS_LIB_SOURCES src/file.cpp)
+set(FS_LIB_SOURCES src/file.cpp src/abi.cpp)
 set(FS_TESTING_SOURCES src/testing.cpp)
 set(FS_EXAMPLE_SOURCES examples/overlap.cpp)
 
@@ -56,7 +56,8 @@ if(FS_PUBLISH_NAMESPACE)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                      "${CMAKE_CURRENT_SOURCE_DIR}/${_fs_original}")
     endforeach()
-    set(FS_LIB_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/published/src/file.cpp")
+    set(FS_LIB_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/published/src/file.cpp"
+                       "${CMAKE_CURRENT_BINARY_DIR}/published/src/abi.cpp")
     set(FS_TESTING_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/published/src/testing.cpp")
     set(FS_EXAMPLE_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/published/examples/overlap.cpp")
     unset(_fs_originals)
@@ -67,6 +68,16 @@ if(FS_PUBLISH_NAMESPACE)
     unset(_fs_published)
 endif()
 
+# The shared object's version, which the generated soname header carries to a loader.
+set(FS_SOVERSION 0)
+set(FS_NAMESPACE fsuser)
+if(FS_PUBLISH_NAMESPACE)
+    set(FS_NAMESPACE ${LIB_NAME})
+endif()
+set(FS_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/soname.hpp.in
+               "${FS_GENERATED_INCLUDE_DIR}/${FS_HEADER_DIR}/soname.hpp" @ONLY)
+
 # ── The library ─────────────────────────────────────────────────────────
 # Static, and nothing links through it: an application reaches the filesystem by syscall alone.
 add_library(fs STATIC ${FS_LIB_SOURCES})
@@ -74,6 +85,7 @@ add_library(fs STATIC ${FS_LIB_SOURCES})
 target_include_directories(fs
     PUBLIC
         $<BUILD_INTERFACE:${FS_LIB_INCLUDE}>
+        $<BUILD_INTERFACE:${FS_GENERATED_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
@@ -81,6 +93,26 @@ target_include_directories(fs
 set_target_properties(fs PROPERTIES OUTPUT_NAME "${LIB_NAME}")
 
 target_compile_options(fs PRIVATE
+    -Wall -Wextra -Wconversion -Wsign-conversion)
+
+# The same sources as a shared object, for a program that loads it with dlopen when it first needs
+# the filesystem and so links nothing of it. Its C entry points are what such a program calls.
+add_library(fs-shared SHARED ${FS_LIB_SOURCES})
+
+target_include_directories(fs-shared
+    PUBLIC
+        $<BUILD_INTERFACE:${FS_LIB_INCLUDE}>
+        $<BUILD_INTERFACE:${FS_GENERATED_INCLUDE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
+
+set_target_properties(fs-shared PROPERTIES
+    OUTPUT_NAME "${LIB_NAME}"
+    SOVERSION ${FS_SOVERSION}
+    POSITION_INDEPENDENT_CODE ON)
+
+target_compile_options(fs-shared PRIVATE
     -Wall -Wextra -Wconversion -Wsign-conversion)
 
 # ── Testing surface ─────────────────────────────────────────────────────
@@ -116,8 +148,10 @@ target_compile_options(fs-overlap PRIVATE -Wall -Wextra -Wconversion -Wsign-conv
 # The headers land in a directory the filesystem names, so an application writes that name in
 # front of the slash and two of these on one host do not collide.
 install(TARGETS fs ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS fs-shared LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY ${FS_LIB_INCLUDE}/${FS_HEADER_DIR} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         PATTERN "testing.hpp" EXCLUDE)
+install(DIRECTORY ${FS_GENERATED_INCLUDE_DIR}/${FS_HEADER_DIR} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/libroof.pc.in

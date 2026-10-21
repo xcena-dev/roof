@@ -29,6 +29,30 @@ Every verb throws rather than returns a code.
 `FsCodedError` carries the errno the syscall left, 
 which `code()` hands back for comparison against `std::errc`.
 
+## The shared library
+
+The same sources are also built as a shared object, `libroof.so.0`, installed beside the archive.
+A program that may never touch this filesystem loads it with `dlopen` the first time it needs it, so it has no build-time dependency on the library.
+All it includes is [`include/fs/abi.hpp`](include/fs/abi.hpp), which also carries the soname as `SharedLibraryName`.
+
+The library exports one C function, `roof_c_api_get(version)`, and its name is the string `dlsym` is given.
+It returns a `CApi_t` table for that interface version, or null when the library does not serve it.
+The table opens with its own size and version, so a later version can append verbs without moving these.
+`open`, `resize`, `map` and `unlink` stay plain syscalls on the caller's side.
+
+| Verb | Same as |
+|---|---|
+| `setRegionAttr(fd, attr)`, `readRegionAttr(fd, &attr)` | `File::setRegionAttr`, `File::readRegionAttr` |
+| `setDefaultPermission(fd, perms)` | `File::setDefaultPermission` |
+| `grantPermission(fd, uid, gid, perms)`, `revokePermission(fd, uid, gid)` | `File::grantPermission`, `File::revokePermission` |
+| `grantRole(fd, group, role, perms, node)`, `revokeRole(fd, group, role, node)` | `File::grantRole`, `File::revokeRole` |
+| `askPermission(fd, perms)` | The question `File::map` asks before `mmap`. |
+
+Each verb takes a descriptor the caller owns and never closes it.
+It returns 0 or a negative errno and never throws.
+A descriptor of a file on another filesystem answers `-ENOTTY`, and a label past `MaxLabelBytes` answers `-EINVAL`.
+The `File` methods call these same verbs and throw `FsCodedError` on a negative return, so each ioctl is built in one place.
+
 ## Example
 
 ```cpp

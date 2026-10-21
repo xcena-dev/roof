@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// file.cpp -- the syscalls behind the verbs, and the records the perm ioctls want.
+// file.cpp -- the syscalls behind the verbs. The ioctls are sent through the C table.
 
 #include "fs/file.hpp"
 
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -14,17 +13,15 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
+#include "fs/abi.hpp"
 #include "fs/errors.hpp"
 #include "uapi.h"
 
 namespace fsuser
 {
-
-// The ioctl records under this tree's C++ names. The uapi header keeps the kernel's C spelling.
-using FsPermReq = struct fs_perm_req;
-using FsRegionAttrReq = struct fs_region_attr_req;
 
 // The header spells these for a caller without the kernel's, so they are held to the kernel's here.
 static_assert(Permission::Read.bits == FS_PERM_READ);
@@ -45,26 +42,19 @@ static_assert(static_cast<std::uint32_t>(Placement::Paged) == FS_PLACEMENT_PAGED
 namespace
 {
 
-// @command is the _IOC value, which is 32 bits wide; ioctl(2) widens it at the call.
-void sendPermRecord(std::int32_t descriptor, std::uint32_t command, FsPermReq& sent, std::string_view named)
+// The table this library serves for its own interface version, which it always does.
+const CApi_t& abiTable()
 {
-    if (::ioctl(descriptor, command, &sent) != 0)
-    {
-        throw FsCodedError{std::string{named}, lastSystemError()};
-    }
+    return *FSUSER_C_NAME(c_api_get)(AbiVersion);
 }
 
-// The labels go NUL-padded into the kernel's fixed arrays. One too long to fit goes with no terminator,
-// which the kernel refuses rather than reading a cut label as another role.
-FsPermReq makeRoleRecord(std::string_view group, std::string_view role, Permission perms, std::uint32_t node)
+// A negative return is the entry point's -errno.
+void requireDone(std::int32_t result, std::string_view named)
 {
-    FsPermReq sent{};
-    sent.kind = FS_PERM_KIND_ROLE;
-    sent.perms = perms.bits;
-    sent.node_id = node;
-    static_cast<void>(group.copy(sent.group, sizeof(sent.group)));
-    static_cast<void>(role.copy(sent.role, sizeof(sent.role)));
-    return sent;
+    if (result < 0)
+    {
+        throw FsCodedError{std::string{named}, std::error_code{-result, std::system_category()}};
+    }
 }
 
 }  // namespace
@@ -187,7 +177,7 @@ Mapping File::map(std::uint64_t bytes, std::int32_t protection)
     {
         asked |= Permission::Write;
     }
-    sendPermRequest(FS_IOC_PERM_ASK, 0, 0, asked, "perm_ask");
+    requireDone(abiTable().askPermission(held_, asked), "perm_ask");
 
     auto* const mapped = ::mmap(nullptr, static_cast<std::size_t>(bytes),
                                 protection, MAP_SHARED, held_, 0);
@@ -203,73 +193,47 @@ void File::setRegionAttr(const RegionAttr_t& attr)
 {
     requireOpen("region_attr_set");
 
-    FsRegionAttrReq sent{};
-    sent.cache = static_cast<std::uint32_t>(attr.cache);
-    sent.placement = static_cast<std::uint32_t>(attr.placement);
-    sent.pieces = attr.pieces;
-
-    if (::ioctl(held_, FS_IOC_REGION_ATTR_SET, &sent) != 0)
-    {
-        throw FsCodedError{"region_attr_set", lastSystemError()};
-    }
+    requireDone(abiTable().setRegionAttr(held_, attr), "region_attr_set");
 }
 
 RegionAttr_t File::readRegionAttr()
 {
     requireOpen("region_attr_get");
 
-    FsRegionAttrReq taken{};
+    RegionAttr_t taken;
+    requireDone(abiTable().readRegionAttr(held_, &taken), "region_attr_get");
 
-    if (::ioctl(held_, FS_IOC_REGION_ATTR_GET, &taken) != 0)
-    {
-        throw FsCodedError{"region_attr_get", lastSystemError()};
-    }
-
-    return RegionAttr_t{static_cast<CachePolicy>(taken.cache), static_cast<Placement>(taken.placement), taken.pieces};
+    return taken;
 }
 
 void File::setDefaultPermission(Permission perms)
 {
-    sendPermRequest(FS_IOC_PERM_SET_DEFAULT, 0, 0, perms, "perm_set_default");
+    requireOpen("perm_set_default");
+    requireDone(abiTable().setDefaultPermission(held_, perms), "perm_set_default");
 }
 
 void File::grantPermission(std::uint32_t uid, std::uint32_t gid, Permission perms)
 {
-    sendPermRequest(FS_IOC_PERM_GRANT, uid, gid, perms, "perm_grant");
+    requireOpen("perm_grant");
+    requireDone(abiTable().grantPermission(held_, uid, gid, perms), "perm_grant");
 }
 
 void File::revokePermission(std::uint32_t uid, std::uint32_t gid)
 {
-    sendPermRequest(FS_IOC_PERM_REVOKE, uid, gid, Permission::None, "perm_revoke");
+    requireOpen("perm_revoke");
+    requireDone(abiTable().revokePermission(held_, uid, gid), "perm_revoke");
 }
 
 void File::grantRole(std::string_view group, std::string_view role, Permission perms, std::uint32_t node)
 {
     requireOpen("perm_grant_role");
-    auto sent = makeRoleRecord(group, role, perms, node);
-    sendPermRecord(held_, FS_IOC_PERM_GRANT, sent, "perm_grant_role");
+    requireDone(abiTable().grantRole(held_, group, role, perms, node), "perm_grant_role");
 }
 
 void File::revokeRole(std::string_view group, std::string_view role, std::uint32_t node)
 {
     requireOpen("perm_revoke_role");
-    auto sent = makeRoleRecord(group, role, Permission::None, node);
-    sendPermRecord(held_, FS_IOC_PERM_REVOKE, sent, "perm_revoke_role");
-}
-
-// The kernel does its own ADMIN check next to the write, so nothing here judges the request.
-void File::sendPermRequest(std::uint32_t command, std::uint32_t uid, std::uint32_t gid,
-                           Permission perms, std::string_view named)
-{
-    requireOpen(named);
-
-    FsPermReq sent{};
-
-    sent.uid = uid;
-    sent.gid = gid;
-    sent.perms = perms.bits;
-
-    sendPermRecord(held_, command, sent, named);
+    requireDone(abiTable().revokeRole(held_, group, role, node), "perm_revoke_role");
 }
 
 // ── free verbs ──────────────────────────────────────────────────────────

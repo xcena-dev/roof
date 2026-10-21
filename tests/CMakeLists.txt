@@ -102,6 +102,12 @@ fs_add_case(test_gc_thread_owner onenode)
 target_link_libraries(test_gc_thread_owner PRIVATE Threads::Threads)
 set_tests_properties(test_gc_thread_owner PROPERTIES RUN_SERIAL ON)
 
+# Loads the shared library by path, as a program with no link-time dependency on it does.
+fs_add_case(test_loadable_abi onenode)
+target_compile_definitions(test_loadable_abi PRIVATE ABI_LIBRARY_PATH="$<TARGET_FILE:fs-shared>")
+target_link_libraries(test_loadable_abi PRIVATE ${CMAKE_DL_LIBS})
+add_dependencies(test_loadable_abi fs-shared)
+
 fs_add_case(test_lock_region_guard onenode)
 
 # Counts the turns taken on the shared lock region, so a case running beside it spends turns this
