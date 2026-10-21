@@ -116,7 +116,8 @@ static void inode_fill_from_entry(struct inode *inode, struct layout_rat_entry *
 	u64 mod_time = copy.local.modified_at;
 	struct timespec64 stamp = { .tv_sec = mod_time / NSEC_PER_SEC, .tv_nsec = mod_time % NSEC_PER_SEC };
 
-	inode->i_mode = S_IFREG | copy.local.mode;
+	/* Only the permission bits off the medium, so a bad entry cannot hand the VFS a type it refuses. */
+	inode->i_mode = S_IFREG | (copy.local.mode & 0777);
 	inode->i_uid = make_kuid(&init_user_ns, copy.local.uid);
 	inode->i_gid = make_kgid(&init_user_ns, copy.local.gid);
 	inode_set_mtime_to_ts(inode, stamp);
