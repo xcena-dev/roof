@@ -9,7 +9,6 @@
 #include <signal.h>  // NOLINT(modernize-deprecated-headers) sigaction is POSIX, not in <csignal>
 #include <unistd.h>
 
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -20,6 +19,7 @@
 #include "audit/audit.hpp"
 #include "backends.hpp"
 #include "commands.hpp"
+#include "common/ordered.hpp"
 #include "config/config.hpp"
 #include "observe/stat.hpp"
 #include "posix/notify.hpp"
@@ -33,13 +33,13 @@ namespace
 
 // Where a signal handler reaches the loop. Set once before the loop runs and cleared after, so a
 // signal landing outside that window finds nothing and does nothing.
-std::atomic<fsdaemon::serve::ServeLoop*> g_runningLoop{nullptr};
+ordered::Published<fsdaemon::serve::ServeLoop*> g_runningLoop;
 
 // SIGHUP asks for a reload and the rest ask the loop to end. Both only poke an eventfd the loop
 // already waits on, so either is safe from here.
 void onSignal(std::int32_t signalNumber)
 {
-    auto* const loop = g_runningLoop.load(std::memory_order_acquire);
+    auto* const loop = g_runningLoop.load();
     if (loop == nullptr)
     {
         return;
@@ -123,7 +123,7 @@ int main(int argc, char** argv)
         }
 
         fsdaemon::serve::ServeLoop loop{channel, handler};
-        g_runningLoop.store(&loop, std::memory_order_release);
+        g_runningLoop.store(&loop);
         registerHandler(SIGTERM);
         registerHandler(SIGINT);
         registerHandler(SIGHUP);
@@ -136,7 +136,7 @@ int main(int argc, char** argv)
         }
 
         loop.run();
-        g_runningLoop.store(nullptr, std::memory_order_release);
+        g_runningLoop.store(nullptr);
     }
     catch (const std::exception& error)
     {

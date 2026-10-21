@@ -7,12 +7,12 @@
 // file-backed cme region stands in for the medium; the kernel and the channel are never touched.
 
 #include <cerrno>
-#include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "cme/shared.hpp"
+#include "common/timing.hpp"
 #include "harness/probe.hpp"
 #include "harness/socket_pair.hpp"
 #include "harness/temp_file.hpp"
@@ -55,12 +55,12 @@ std::string makeRegion(const std::string& path)
 }
 
 // The loop runs on its own thread, so a frame it has read is not yet a frame it has served.
-bool releasedWithin(fsdaemon::turn::CmeTurn& node, const std::string& domain, std::chrono::milliseconds within)
+bool releasedWithin(fsdaemon::turn::CmeTurn& node, const std::string& domain, timing::Millis within)
 {
-    const auto deadline = std::chrono::steady_clock::now() + within;
+    const timing::Deadline deadline{within};
     while (node.holds(domain))
     {
-        if (std::chrono::steady_clock::now() >= deadline)
+        if (deadline.expired())
         {
             return false;
         }
@@ -108,7 +108,7 @@ void checkLockUnlockLoop(fsdaemon::probe::Context& ctx)
     FsDaemonUnlockRequest unlock{};
     writeName(unlock.domain, "turn.d");
     writeFrame(pair.getMine(), FS_DAEMON_MSG_UNLOCK_REQUEST, 42, unlock);
-    ctx.check(releasedWithin(turn, "turn.d", std::chrono::seconds{1}), "the domain is given back");
+    ctx.check(releasedWithin(turn, "turn.d", timing::Secs{1}), "the domain is given back");
 
     loop.stop();
     runner.join();
@@ -116,16 +116,16 @@ void checkLockUnlockLoop(fsdaemon::probe::Context& ctx)
 
 // One try spends a slice and can miss on a loaded machine, so a case that needs the domain held
 // asks the way the loop does, until the deadline.
-bool holdWithin(fsdaemon::turn::CmeTurn& node, const std::string& domain, std::chrono::milliseconds within)
+bool holdWithin(fsdaemon::turn::CmeTurn& node, const std::string& domain, timing::Millis within)
 {
-    const auto deadline = std::chrono::steady_clock::now() + within;
+    const timing::Deadline deadline{within};
     do
     {
         if (node.tryAcquireHere(domain))
         {
             return true;
         }
-    } while (std::chrono::steady_clock::now() < deadline);
+    } while (!deadline.expired());
     return false;
 }
 
@@ -144,7 +144,7 @@ void checkWaitedLockRecorded(fsdaemon::probe::Context& ctx)
     const std::vector<std::string> domains{"turn.d"};
     fsdaemon::turn::CmeTurn other{uri, domains};
     fsdaemon::turn::CmeTurn turn{uri, domains};
-    if (!ctx.check(holdWithin(other, "turn.d", std::chrono::seconds{2}), "another node holds the domain"))
+    if (!ctx.check(holdWithin(other, "turn.d", timing::Secs{2}), "another node holds the domain"))
     {
         return;
     }

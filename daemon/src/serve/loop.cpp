@@ -5,10 +5,9 @@
 
 #include "serve/loop.hpp"
 
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 
+#include "common/timing.hpp"
 #include "serve/channel.hpp"
 #include "serve/handler.hpp"
 
@@ -25,7 +24,7 @@ constexpr std::uint32_t ReadyAtOnce = 8;
 // How long the loop keeps reading after an answer before it sleeps. Waking a sleeping daemon is the
 // largest single span of an upcall, and a create sends three in a row, so a request that arrives in
 // this window is answered without that wake. One that does not costs this much of an idle core.
-constexpr auto SpinAfterAnswer = std::chrono::microseconds{25};
+constexpr timing::Micros SpinAfterAnswer{25};
 
 }  // namespace
 
@@ -41,7 +40,7 @@ ServeLoop::ServeLoop(FsChannel& channel, RequestHandler& handler)
 
 void ServeLoop::run()
 {
-    while (running_.load(std::memory_order_acquire))
+    while (running_.load())
     {
         // No timeout: every reason this loop has to act arrives as one of the three descriptors it
         // watches, and a stop pokes its own. A periodic wake would find nothing to do.
@@ -49,12 +48,12 @@ void ServeLoop::run()
         {
             if (stopSignal_.consumeWake(readyDescriptor))
             {
-                running_.store(false, std::memory_order_release);
+                running_.store(false);
                 continue;
             }
             if (reloadSignal_.consumeWake(readyDescriptor))
             {
-                reloadPending_.store(false, std::memory_order_release);
+                reloadPending_.store(false);
                 handler_.reloadBackends();
                 continue;
             }
@@ -68,7 +67,7 @@ void ServeLoop::run()
 
 void ServeLoop::serveChannel()
 {
-    auto deadline = std::chrono::steady_clock::now() + SpinAfterAnswer;
+    timing::Deadline spinning{SpinAfterAnswer};
     do
     {
         const auto frames = channel_.readReady();
@@ -78,26 +77,26 @@ void ServeLoop::serveChannel()
         }
         if (channel_.isEndOfStream())
         {
-            running_.store(false, std::memory_order_release);
+            running_.store(false);
             return;
         }
         if (!frames.empty())
         {
-            deadline = std::chrono::steady_clock::now() + SpinAfterAnswer;
+            spinning = timing::Deadline{SpinAfterAnswer};
         }
-    } while (running_.load(std::memory_order_acquire) && !reloadPending_.load(std::memory_order_acquire) &&
-             std::chrono::steady_clock::now() < deadline);
+    } while (running_.load() && !reloadPending_.load() &&
+             !spinning.expired());
 }
 
 void ServeLoop::stop() noexcept
 {
-    running_.store(false, std::memory_order_release);
+    running_.store(false);
     stopSignal_.poke();
 }
 
 void ServeLoop::requestReload() noexcept
 {
-    reloadPending_.store(true, std::memory_order_release);
+    reloadPending_.store(true);
     reloadSignal_.poke();
 }
 

@@ -12,16 +12,16 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include "common/poll.hpp"
+#include "common/timing.hpp"
 #include "fs/errors.hpp"
 #include "fs/file.hpp"
 #include "harness/mount.hpp"
@@ -77,19 +77,15 @@ inline void unlinkAll(const Mount& mount, const std::vector<std::string>& names)
 // Bounded, so a free that never lands ends the case with a failed check instead of hanging it.
 [[nodiscard]] inline bool waitForWritebackFree(std::uint64_t bytes)
 {
-    constexpr std::chrono::seconds Deadline{60};
-    constexpr std::chrono::milliseconds Poll{100};
-    const auto until = std::chrono::steady_clock::now() + Deadline;
-    while (std::chrono::steady_clock::now() < until)
-    {
-        const auto pools = readPoolInfo();
-        if (pools && pools->wbFree == bytes)
+    constexpr timing::Secs Deadline{60};
+    constexpr timing::Millis Poll{100};
+    return polling::waitUntil(
+        [bytes]
         {
-            return true;
-        }
-        std::this_thread::sleep_for(Poll);
-    }
-    return false;
+            const auto pools = readPoolInfo();
+            return pools && pools->wbFree == bytes;
+        },
+        Deadline, Poll);
 }
 
 // Contiguous fillers until not one granule is free. Each takes the largest size that still lands, so

@@ -6,7 +6,6 @@
 #include "serve/handler.hpp"
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -15,6 +14,7 @@
 #include <string_view>
 
 #include "audit/audit.hpp"
+#include "common/timing.hpp"
 #include "identity/base.hpp"
 #include "model.hpp"
 #include "observe/stat.hpp"
@@ -67,13 +67,13 @@ bool isSendableLabel(std::string_view label)
 
 // The fields every audit line carries, whatever else the caller goes on to fill in.
 fsdaemon::audit::Record_t startRecord(fsdaemon::audit::Record_t::Kind kind, std::uint64_t seq, std::uint32_t pid,
-                                      std::chrono::steady_clock::time_point began)
+                                      const timing::Stopwatch& began)
 {
     fsdaemon::audit::Record_t entry{};
     entry.kind = kind;
     entry.seq = seq;
     entry.pid = pid;
-    entry.latency = std::chrono::steady_clock::now() - began;
+    entry.latency = began.elapsed<timing::MillisF>();
     return entry;
 }
 
@@ -102,7 +102,7 @@ void RequestHandler::handleAttest(FsChannel& channel, const Frame_t& frame) noex
     }
 
     const auto facts = readCreds(*request);
-    const auto began = std::chrono::steady_clock::now();
+    const timing::Stopwatch began;
     try
     {
         auto stamp = markStage();
@@ -164,7 +164,7 @@ void RequestHandler::handleAccess(FsChannel& channel, const Frame_t& frame) noex
     const auto ownerGroup = wire::readName(request->owner_group);
     const auto ownerRole = wire::readName(request->owner_role);
 
-    const auto began = std::chrono::steady_clock::now();
+    const timing::Stopwatch began;
     try
     {
         auto stamp = markStage();
@@ -197,7 +197,7 @@ void RequestHandler::handleAccess(FsChannel& channel, const Frame_t& frame) noex
             entry.hasDecision = true;
             entry.allow = decision.allow;
             entry.grantedPerms = decision.grantedPerms;
-            entry.expiry = std::chrono::seconds{decision.expirySecs};
+            entry.expiry = timing::Secs{decision.expirySecs};
             entry.rule = decision.rule;
             entry.reason = decision.reason;
             audit_->record(entry);
@@ -298,9 +298,9 @@ bool RequestHandler::handleLock(FsChannel& channel, const Frame_t& frame) noexce
     }
 
     const auto domain = wire::readName(request->domain);
-    const std::chrono::milliseconds maxWait{FS_DAEMON_LOCK_MAX_WAIT_MS};
-    const std::chrono::milliseconds asked{static_cast<std::uint32_t>(request->timeout_ms)};
-    const auto isCapped = asked == std::chrono::milliseconds::zero() || asked > maxWait;
+    const timing::Millis maxWait{FS_DAEMON_LOCK_MAX_WAIT_MS};
+    const timing::Millis asked{static_cast<std::uint32_t>(request->timeout_ms)};
+    const auto isCapped = asked == timing::Millis::zero() || asked > maxWait;
     const auto timeout = isCapped ? maxWait : asked;
 
     const auto began = markStage();

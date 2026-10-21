@@ -11,8 +11,7 @@
 
 #pragma once
 
-#include <atomic>
-
+#include "common/ordered.hpp"
 #include "posix/epoll.hpp"
 #include "posix/event_fd.hpp"
 
@@ -49,10 +48,10 @@ private:
     posix::EventFd stopSignal_;
     posix::EventFd reloadSignal_;
     posix::Epoll epoll_;
-    std::atomic<bool> running_{true};
+    ordered::Published<bool> running_{true};
     // Set alongside reloadSignal_'s poke and cleared once handled, so a serveChannel() pass mid
     // request storm can notice a pending reload without waiting for the channel to fall idle.
-    std::atomic<bool> reloadPending_{false};
+    ordered::Published<bool> reloadPending_;
 };
 
 }  // namespace fsdaemon::serve

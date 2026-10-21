@@ -17,8 +17,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +25,8 @@
 #include <thread>
 #include <utility>
 
+#include "common/ordered.hpp"
+#include "common/timing.hpp"
 #include "harness/probe.hpp"
 #include "model.hpp"
 #include "policy/base.hpp"
@@ -42,7 +42,7 @@ using fsdaemon::policy::Decision_t;
 using fsdaemon::policy::makeCurlTransport;
 using fsdaemon::policy::OpaPolicyEngine;
 
-constexpr std::chrono::milliseconds ExchangeTimeout{4000};
+constexpr timing::Millis ExchangeTimeout{4000};
 
 // How long the listener waits on one poll before it looks at the stop flag again.
 constexpr std::int32_t PollMillis = 50;
@@ -115,7 +115,7 @@ public:
         worker_ = std::thread(
             [this, body]()
             {
-                while (!stopping_)
+                while (!stopping_.load())
                 {
                     pollfd waiting{listener_.get(), POLLIN, 0};
                     if (::poll(&waiting, 1, PollMillis) <= 0)
@@ -128,7 +128,7 @@ public:
                         continue;
                     }
                     serveOnce(client.get(), body, &request_);
-                    served_ = true;
+                    served_.store(true);
                     return;
                 }
             });
@@ -139,7 +139,7 @@ public:
 
     ~OneShotServer()
     {
-        stopping_ = true;
+        stopping_.store(true);
         if (worker_.joinable())
         {
             worker_.join();
@@ -148,7 +148,7 @@ public:
 
     [[nodiscard]] bool hasServed() const noexcept
     {
-        return served_;
+        return served_.load();
     }
 
     [[nodiscard]] const std::string& getRequest() const noexcept
@@ -160,8 +160,8 @@ private:
     fsdaemon::posix::UniqueFd listener_;
     std::thread worker_;
     std::string request_;
-    std::atomic<bool> served_{false};
-    std::atomic<bool> stopping_{false};
+    ordered::SeqCst<bool> served_{false};
+    ordered::SeqCst<bool> stopping_{false};
 };
 
 // A directory of this probe's own, unlinked with the socket inside it. mkdtemp and not a fixed name,

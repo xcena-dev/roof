@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "backends.hpp"
+#include "common/timing.hpp"
 #include "config/config.hpp"
 #include "delegatedidentity.grpc.pb.h"
 #include "delegatedidentity.pb.h"
@@ -51,7 +52,7 @@ std::pair<std::string, std::string> splitLabel(std::string_view label)
 // Reads the first stream message that carries a SVID and returns its SPIFFE id, or throws. The first
 // message can be an empty subscription ack, so this reads until one has a SVID or the stream ends.
 std::string readFirstSvid(delegated::DelegatedIdentity::Stub& stub, const std::vector<std::string>& labels,
-                          std::chrono::milliseconds timeout)
+                          timing::Millis timeout)
 {
     delegated::SubscribeToX509SVIDsRequest request{};
     for (const auto& label : labels)
@@ -87,7 +88,7 @@ std::string readFirstSvid(delegated::DelegatedIdentity::Stub& stub, const std::v
 
 // A fetcher over a persistent channel to @socketPath, the unix socket the agent listens on.
 // @timeout bounds the whole subscribe. A SVID whose own trust domain is empty is an error.
-SvidFetcher makeGrpcSvidFetcher(std::string_view socketPath, std::chrono::milliseconds timeout)
+SvidFetcher makeGrpcSvidFetcher(std::string_view socketPath, timing::Millis timeout)
 {
     const auto channel =
         grpc::CreateChannel(std::string{"unix:"}.append(socketPath), grpc::InsecureChannelCredentials());

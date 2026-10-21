@@ -20,16 +20,16 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <set>
 #include <string>
-#include <thread>
 #include <vector>
 
+#include "common/poll.hpp"
+#include "common/timing.hpp"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
@@ -49,8 +49,8 @@ struct MountNodes_t
 
 // A sweep every few seconds is the observed cadence, and this is well past it so a slower host is a
 // slower run rather than a red one.
-constexpr std::int32_t SweepDeadlineSeconds = 60;
-constexpr std::int32_t SweepPollMillis = 250;
+constexpr timing::Secs SweepDeadline{60};
+constexpr timing::Millis SweepPoll{250};
 
 // The one sysfs file that names every delegation row, rather than a count of them.
 constexpr const char* DelegInfoPath = "/sys/fs/" FS_NAME_STR "/deleg_info";
@@ -160,15 +160,13 @@ void checkTheSweepCounterMoves(fsuser::tests::Report& report, const MountNodes_t
         return;
     }
 
-    bool bothMoved = false;
-    const auto until =
-        std::chrono::steady_clock::now() + std::chrono::seconds(SweepDeadlineSeconds);
-    while (!bothMoved && std::chrono::steady_clock::now() < until)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(SweepPollMillis));
-        bothMoved = fsuser::tests::readSweepCount(nodes.first) > firstBefore &&
-                    fsuser::tests::readSweepCount(nodes.second) > secondBefore;
-    }
+    const bool bothMoved = polling::waitUntil(
+        [&nodes, firstBefore, secondBefore]
+        {
+            return fsuser::tests::readSweepCount(nodes.first) > firstBefore &&
+                   fsuser::tests::readSweepCount(nodes.second) > secondBefore;
+        },
+        SweepDeadline, SweepPoll);
     report.check("both counts advance within the deadline, so both sweeps are running",
                  bothMoved);
 }

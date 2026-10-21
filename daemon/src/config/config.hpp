@@ -8,12 +8,13 @@
 
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "common/timing.hpp"
 
 namespace fsdaemon::config
 {
@@ -182,7 +183,7 @@ public:
 
     // The upcall budget as a transport takes it. The file writes seconds and every backend bounds
     // one request in milliseconds, so the conversion lives with the value.
-    [[nodiscard]] std::chrono::milliseconds getRequestTimeout() const;
+    [[nodiscard]] timing::Millis getRequestTimeout() const;
 
 private:
     // The two factories are the only way in, so a Config a caller holds is always one a source was
@@ -225,7 +226,7 @@ private:
 
     // Neither is read from outside: the two accessors above are what they exist for.
     std::string channelPathOverride_;
-    std::chrono::duration<double> upcallRequestTimeout_{4.0};
+    timing::SecsF upcallRequestTimeout_{4.0};
     std::uint32_t upcallWorkers_{4};
     bool upcallTraceTurns_{false};
 };

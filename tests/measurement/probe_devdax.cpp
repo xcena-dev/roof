@@ -18,22 +18,20 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <numeric>
-#include <ratio>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/timing.hpp"
+
 namespace
 {
-
-using Clock = std::chrono::steady_clock;
 
 // Below four a percentile lands on the same sample twice, which reads as a spread that is not there.
 constexpr std::uint32_t LeastRounds = 4;
@@ -50,11 +48,6 @@ struct Round_t
     void* mapped{nullptr};
     double took{0.0};
 };
-
-[[nodiscard]] double takeElapsedUs(Clock::time_point began, Clock::time_point ended)
-{
-    return std::chrono::duration<double, std::micro>{ended - began}.count();
-}
 
 // The device's own size, so the window is placed from the end rather than from a number written
 // here that a differently sized device would put past it.
@@ -139,9 +132,9 @@ int main(int argc, char** argv)
     // call. ftruncate and unlink have none: there is no file to resize and none to take away.
     for (auto& round : rounds)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto opened = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (opened < 0)
         {
             std::perror("open");
@@ -161,10 +154,10 @@ int main(int argc, char** argv)
     auto offset = tail;
     for (auto& round : rounds)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         round.mapped = ::mmap(nullptr, HugeSize, PROT_READ, MAP_SHARED, handle,
                               static_cast<::off_t>(offset));
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (round.mapped == MAP_FAILED)
         {
             round.mapped = nullptr;
@@ -179,9 +172,9 @@ int main(int argc, char** argv)
     for (auto& round : rounds)
     {
         const auto* first = static_cast<const volatile unsigned char*>(round.mapped);
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto seen = *first;
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         (void)seen;
     }
     printPhase(tag, "fault", rounds);

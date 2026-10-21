@@ -9,13 +9,14 @@
 
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
+
+#include "common/timing.hpp"
 
 namespace fsdaemon::observe
 {
@@ -111,10 +112,7 @@ private:
 
     [[nodiscard]] static std::uint64_t readClock() noexcept
     {
-        return static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
+        return timing::monotonic<timing::Nanos>();
     }
 
     bool enabled_;

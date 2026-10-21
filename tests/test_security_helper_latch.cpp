@@ -17,7 +17,6 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +24,7 @@
 #include <string>
 #include <thread>
 
+#include "common/timing.hpp"
 #include "fs/errors.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
@@ -38,11 +38,11 @@ using fsuser::tests::caseName;
 using fsuser::tests::SkipStatus;
 
 // Longer than the kernel's own wait, so the request under way gives up while the helper is stopped.
-constexpr std::int32_t StoppedSeconds = 7;
+constexpr timing::Secs StoppedFor{7};
 
 // Together two kernel waits, which is the most a helper that is back should need to serve again.
 constexpr std::int32_t RecoveryAttempts = 20;
-constexpr std::int32_t RecoveryStepMs = 500;
+constexpr timing::Millis RecoveryStep{500};
 
 // An order of magnitude under the kernel's own wait, so a refusal that took one is separated from
 // the latch answering at once, with room for a loaded host.
@@ -104,7 +104,7 @@ void checkChannelRecoversFromOneTimeout(fsuser::tests::Report& report, fsuser::t
         }
         // What the latch is for: inside the wait that follows a timeout the refusal arrives without
         // the request being sent, so it costs nothing like a wait of its own.
-        const auto beganAt = std::chrono::steady_clock::now();
+        const timing::Stopwatch refusal;
         std::int32_t latchedErrno = 0;
         try
         {
@@ -114,12 +114,9 @@ void checkChannelRecoversFromOneTimeout(fsuser::tests::Report& report, fsuser::t
         {
             latchedErrno = refused.code().value();
         }
-        const auto refusedAfterMs = static_cast<std::int64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - beganAt)
-                .count());
+        const std::int64_t refusedAfterMs = refusal.elapsed<timing::Millis>().count();
 
-        std::this_thread::sleep_for(std::chrono::seconds(StoppedSeconds));
+        std::this_thread::sleep_for(StoppedFor);
         report.check("the helper resumes", ::kill(helperPid, SIGCONT) == 0);
 
         report.checkErrno("the create under a stopped helper timed out", createErrno == ETIMEDOUT,
@@ -134,7 +131,7 @@ void checkChannelRecoversFromOneTimeout(fsuser::tests::Report& report, fsuser::t
         std::int32_t afterErrno = ETIMEDOUT;
         for (std::int32_t attempt = 0; attempt < RecoveryAttempts && afterErrno == ETIMEDOUT; ++attempt)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(RecoveryStepMs));
+            std::this_thread::sleep_for(RecoveryStep);
             afterErrno = 0;
             try
             {

@@ -13,15 +13,14 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <ratio>
 #include <string>
 #include <string_view>
 
+#include "common/timing.hpp"
 #include "probe_common.hpp"
 
 namespace
@@ -32,10 +31,8 @@ using fsuser::probes::PageBytes;
 using fsuser::probes::parseUnsigned;
 using fsuser::probes::readMinorFaults;
 
-using Clock = std::chrono::steady_clock;
-
 // A touch slower than the last bucket counts toward the totals only, so a rank there reports the max.
-constexpr std::chrono::nanoseconds BucketWidth{10};
+constexpr timing::Nanos BucketWidth{10};
 constexpr std::int64_t BucketCount = 10000;
 
 enum class Access : std::uint8_t
@@ -48,12 +45,12 @@ struct Histogram_t
 {
     std::array<std::uint64_t, BucketCount> buckets{};
     std::uint64_t count{0};
-    std::chrono::nanoseconds total{0};
-    std::chrono::nanoseconds fastest{std::chrono::nanoseconds::max()};
-    std::chrono::nanoseconds slowest{0};
+    timing::Nanos total{0};
+    timing::Nanos fastest{timing::Nanos::max()};
+    timing::Nanos slowest{0};
     std::uint64_t minorFaults{0};
 
-    void add(std::chrono::nanoseconds elapsed)
+    void add(timing::Nanos elapsed)
     {
         const std::int64_t bucket = elapsed / BucketWidth;
         if (bucket < BucketCount)
@@ -67,11 +64,11 @@ struct Histogram_t
     }
 
     // The lower edge of the bucket that holds the sample at @rank, but never below the fastest sample.
-    [[nodiscard]] std::chrono::nanoseconds pickRank(double rank) const
+    [[nodiscard]] timing::Nanos pickRank(double rank) const
     {
         const auto wanted = static_cast<std::uint64_t>(rank * static_cast<double>(count - 1));
         std::uint64_t seen = 0;
-        std::chrono::nanoseconds edge{0};
+        timing::Nanos edge{0};
         for (const std::uint64_t inBucket : buckets)
         {
             seen += inBucket;
@@ -93,7 +90,7 @@ struct Histogram_t
     for (std::uint64_t page = 0; page < pages; ++page)
     {
         volatile std::uint8_t* const cell = base + page * PageBytes;
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         if (access == Access::Write)
         {
             *cell = 1;
@@ -103,8 +100,7 @@ struct Histogram_t
             const std::uint8_t seen = *cell;
             (void)seen;
         }
-        const auto ended = Clock::now();
-        histogram.add(std::chrono::duration_cast<std::chrono::nanoseconds>(ended - began));
+        histogram.add(began.elapsed<timing::Nanos>());
     }
     histogram.minorFaults = readMinorFaults() - faultsBefore;
     return histogram;
@@ -112,16 +108,14 @@ struct Histogram_t
 
 void printPass(std::string_view pass, const Histogram_t& histogram)
 {
-    using Microseconds = std::chrono::duration<double, std::micro>;
-    using Milliseconds = std::chrono::duration<double, std::milli>;
     constexpr double MedianRank = 0.50;
     constexpr double P95Rank = 0.95;
     std::printf("%.*s,%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%llu\n", static_cast<int>(pass.size()), pass.data(),
-                static_cast<unsigned long long>(histogram.count), Microseconds{histogram.fastest}.count(),
-                Microseconds{histogram.pickRank(MedianRank)}.count(),
-                Microseconds{histogram.pickRank(P95Rank)}.count(), Microseconds{histogram.slowest}.count(),
-                Microseconds{histogram.total}.count() / static_cast<double>(histogram.count),
-                Milliseconds{histogram.total}.count(), static_cast<unsigned long long>(histogram.minorFaults));
+                static_cast<unsigned long long>(histogram.count), timing::MicrosF{histogram.fastest}.count(),
+                timing::MicrosF{histogram.pickRank(MedianRank)}.count(),
+                timing::MicrosF{histogram.pickRank(P95Rank)}.count(), timing::MicrosF{histogram.slowest}.count(),
+                timing::MicrosF{histogram.total}.count() / static_cast<double>(histogram.count),
+                timing::MillisF{histogram.total}.count(), static_cast<unsigned long long>(histogram.minorFaults));
 }
 
 [[nodiscard]] bool isCharDevice(const std::string& path)

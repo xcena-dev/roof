@@ -7,28 +7,28 @@
 # waiting to be noticed the next time someone measures.
 
 add_executable(probe_ops probe_ops.cpp)
-target_link_libraries(probe_ops PRIVATE fs-testing)
+target_link_libraries(probe_ops PRIVATE fs-testing fs-common)
 target_include_directories(probe_ops PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../../kernel/include)
 target_compile_options(probe_ops PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
 add_executable(probe_access probe_access.cpp)
-target_link_libraries(probe_access PRIVATE fs-testing)
+target_link_libraries(probe_access PRIVATE fs-testing fs-common)
 target_include_directories(probe_access PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../../kernel/include)
 target_compile_options(probe_access PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
 add_executable(probe_perm probe_perm.cpp)
-target_link_libraries(probe_perm PRIVATE fs-testing)
+target_link_libraries(probe_perm PRIVATE fs-testing fs-common)
 target_include_directories(probe_perm PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../../kernel/include)
 target_compile_options(probe_perm PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
 add_executable(probe_data probe_data.cpp)
-target_link_libraries(probe_data PRIVATE fs-testing)
+target_link_libraries(probe_data PRIVATE fs-testing fs-common)
 target_include_directories(probe_data PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../../kernel/include)
@@ -37,10 +37,12 @@ target_compile_options(probe_data PRIVATE -Wall -Wextra -Wconversion -Wsign-conv
 # The floor, so it reaches neither the library nor the harness: a chardev has no names to join to a
 # mount point and no turn counter to read.
 add_executable(probe_devdax probe_devdax.cpp)
+target_link_libraries(probe_devdax PRIVATE fs-common)
 target_compile_options(probe_devdax PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
 # Plain syscalls, so a device_dax chardev and a file on a mount go through the same timing code.
 add_executable(probe_fault probe_fault.cpp)
+target_link_libraries(probe_fault PRIVATE fs-common)
 target_compile_options(probe_fault PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)
 
 add_executable(probe_huge_bytes probe_huge_bytes.cpp)

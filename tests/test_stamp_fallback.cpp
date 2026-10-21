@@ -13,7 +13,6 @@
 
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -21,6 +20,7 @@
 #include <string>
 #include <thread>
 
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 #include "harness/sysfs.hpp"
@@ -39,7 +39,7 @@ constexpr std::int64_t MinuteFastOffsetNs = 60 * NanosPerSecond;
 
 // Several sweeps' worth of wall-clock time, with room to spare, so a slower host is a slower run
 // rather than a red one.
-constexpr std::int32_t GraceSeconds = 45;
+constexpr timing::Secs Grace{45};
 
 constexpr std::uint32_t BootstrapStateHeld = 1;
 
@@ -91,7 +91,7 @@ void checkMovingOutOfRangeStampStaysHeld(Report& report, std::uint32_t readerNod
     report.check("the fault injection accepts the offset",
                  fsuser::tests::writeStampOffset(targetNodeId, offsetNs));
 
-    std::this_thread::sleep_for(std::chrono::seconds(GraceSeconds));
+    std::this_thread::sleep_for(Grace);
 
     const auto state = slotStateOf(readerNodeId, targetNodeId);
     report.check("bootstrap_dump still carries this node's slot", state.has_value());

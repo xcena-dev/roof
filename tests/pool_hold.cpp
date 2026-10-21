@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -22,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "fs/errors.hpp"
 #include "fs/file.hpp"
 #include "harness/mount.hpp"
@@ -43,10 +43,10 @@ void reply(std::string_view text)
 
 // "placed <pieces>" or "refused <errno>". EAGAIN is retried until @patience runs out, since that is a
 // turn a dead peer still holds.
-[[nodiscard]] std::string placePaged(std::string_view path, std::uint64_t bytes, std::chrono::seconds patience)
+[[nodiscard]] std::string placePaged(std::string_view path, std::uint64_t bytes, timing::Secs patience)
 {
-    constexpr std::chrono::milliseconds Retry{200};
-    const auto until = std::chrono::steady_clock::now() + patience;
+    constexpr timing::Millis Retry{200};
+    const timing::Deadline until{patience};
     std::optional<fsuser::File> file;
     bool asked = false;
     while (true)
@@ -68,7 +68,7 @@ void reply(std::string_view text)
         catch (const fsuser::FsCodedError& failure)
         {
             if (failure.code() == std::errc::resource_unavailable_try_again &&
-                std::chrono::steady_clock::now() < until)
+                !until.expired())
             {
                 std::this_thread::sleep_for(Retry);
                 continue;
@@ -118,7 +118,7 @@ void reply(std::string_view text)
         const auto patience = fsuser::tests::parseUnsigned(extra).value_or(0);
         placed.push_back(name);
         return placePaged(mount.pathTo(name), fragments.holeBytes,
-                          std::chrono::seconds{static_cast<std::int64_t>(patience)});
+                          timing::Secs{static_cast<std::int64_t>(patience)});
     }
     if (verb == "verify")
     {
@@ -196,7 +196,7 @@ int main(int argc, char** argv)
             {
                 return UsageStatus;
             }
-            const auto answer = placePaged(args[1], *bytes, std::chrono::seconds{0});
+            const auto answer = placePaged(args[1], *bytes, timing::Secs{0});
             reply(answer);
             return answer.rfind("placed", 0) == 0 ? 0 : 1;
         }

@@ -29,7 +29,6 @@
 #include <sys/stat.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -38,11 +37,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "common/poll.hpp"
+#include "common/timing.hpp"
 #include "daemon_command.hpp"
 #include "helper_common.hpp"
 #include "mount_table.hpp"
@@ -61,8 +61,8 @@ constexpr std::string_view DaemonConfigOption = "daemon_config=";
 constexpr std::string_view DefaultDaemonConfig = "/etc/" FS_NAME_STR "/config.yaml";
 
 // How long stage 2 waits on the daemon, and how often it looks.
-constexpr std::chrono::milliseconds DaemonWait{5000};
-constexpr std::chrono::milliseconds DaemonPoll{50};
+constexpr timing::Millis DaemonWait{5000};
+constexpr timing::Millis DaemonPoll{50};
 
 // ── small types ─────────────────────────────────────────────────────────
 
@@ -289,14 +289,13 @@ struct SplitOptions_t
         return false;
     }
 
-    const auto until = std::chrono::steady_clock::now() + DaemonWait;
-    while (std::chrono::steady_clock::now() < until)
+    const auto isServing = [nodeId]
     {
-        if (isHelperServing(nodeId))
-        {
-            return true;
-        }
-        std::this_thread::sleep_for(DaemonPoll);
+        return isHelperServing(nodeId);
+    };
+    if (polling::waitUntil(isServing, DaemonWait, DaemonPoll))
+    {
+        return true;
     }
 
     std::fprintf(stderr, FS_PROGRAM_NAME ": %s did not greet the kernel within %" PRId64 " ms\n",

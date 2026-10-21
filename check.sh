@@ -41,6 +41,7 @@ KERNEL_DIRS=(kernel/src kernel/test kernel/debug)
 TIDY_FLAGS=(-std=c++17 -O2 -DNDEBUG
             -DFS_PROGRAM_NAME=\"header-pass\"
             -I"$ROOT/tests"
+            -I"$ROOT/common"
             -I"$ROOT/libroof/include"
             -I"$ROOT/kernel/include"
             -I/usr/local/include)
@@ -52,6 +53,7 @@ TIDY_FLAGS=(-std=c++17 -O2 -DNDEBUG
 DAEMON_CME_DIR="${DAEMON_CME_DIR:-$HOME/cme}"
 DAEMON_TIDY_FLAGS=(-std=c++17 -O2 -DNDEBUG
                   -I"$ROOT/daemon/src"
+                  -I"$ROOT/common"
                   -I"$ROOT/daemon/regorus_ffi/include"
                   -I"$BUILD_DIR/daemon/gen"
                   -I"$DAEMON_CME_DIR/include"

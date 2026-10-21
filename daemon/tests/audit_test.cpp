@@ -8,10 +8,9 @@
 
 #include "audit/audit.hpp"
 
-#include <chrono>
-#include <ratio>
 #include <string>
 
+#include "common/timing.hpp"
 #include "harness/probe.hpp"
 
 namespace
@@ -31,7 +30,7 @@ Record_t accessRecord()
     record.kind = Record_t::Kind::Access;
     record.seq = 9;
     record.pid = 4242;
-    record.latency = std::chrono::duration<double, std::milli>{1.5};
+    record.latency = timing::MillisF{1.5};
     record.hasIdentity = true;
     record.group = "prod";
     record.role = "llm-worker";
@@ -39,7 +38,7 @@ Record_t accessRecord()
     record.hasDecision = true;
     record.allow = true;
     record.grantedPerms = 3;
-    record.expiry = std::chrono::seconds{3600};
+    record.expiry = timing::Secs{3600};
     record.rule = "same-group";
     return record;
 }

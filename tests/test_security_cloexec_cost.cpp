@@ -17,13 +17,12 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <exception>
-#include <ratio>
 #include <string>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
@@ -49,14 +48,13 @@ constexpr double AllowedRatio = 4.0;
 [[nodiscard]] double measureReadMicros(std::int32_t descriptor)
 {
     char byte = 0;
-    const auto began = std::chrono::steady_clock::now();
+    const timing::Stopwatch began;
     for (std::uint32_t round = 0; round < ReadRounds; ++round)
     {
         const auto got = ::pread(descriptor, &byte, 1, 0);
         static_cast<void>(got);
     }
-    const auto elapsed = std::chrono::steady_clock::now() - began;
-    return std::chrono::duration<double, std::micro>{elapsed}.count() / ReadRounds;
+    return began.elapsed<timing::MicrosF>().count() / ReadRounds;
 }
 
 // Raises the soft descriptor limit as far as the hard limit allows, so the padding below has room.

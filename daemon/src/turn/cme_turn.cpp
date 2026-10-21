@@ -6,7 +6,6 @@
 #include "turn/internal/cme_turn.hpp"
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -19,6 +18,7 @@
 #include "cme/errors.hpp"
 #include "cme/shared.hpp"
 #include "cme/shared_session.hpp"
+#include "common/timing.hpp"
 
 namespace fsdaemon::turn
 {
@@ -28,7 +28,7 @@ namespace
 
 // What the serve loop spends before handing a busy domain to the waiter. Zero cannot be it: that
 // leaves nothing for the inter-node half, which takes single-digit microseconds even when free.
-constexpr auto TryBudget = std::chrono::microseconds{50};
+constexpr timing::Micros TryBudget{50};
 
 }  // namespace
 
@@ -71,7 +71,7 @@ CmeTurn::~CmeTurn()
     stopWaiter();
 }
 
-bool CmeTurn::takeDomain(const std::string& domain, std::chrono::nanoseconds timeout, Taker taker)
+bool CmeTurn::takeDomain(const std::string& domain, timing::Nanos timeout, Taker taker)
 {
     {
         const std::lock_guard guard{heldGuard_};
@@ -107,7 +107,7 @@ bool CmeTurn::tryAcquireHere(const std::string& domain)
     return takeDomain(domain, TryBudget, Taker::Loop);
 }
 
-void CmeTurn::awaitDomain(const std::string& domain, std::chrono::nanoseconds timeout, Answer answer)
+void CmeTurn::awaitDomain(const std::string& domain, timing::Nanos timeout, Answer answer)
 {
     post(
         [this, domain, timeout, answer = std::move(answer)]

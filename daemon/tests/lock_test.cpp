@@ -7,13 +7,13 @@
 // exclude each other. The test never touches the kernel or the char device; it drives the turn
 // service directly and checks acquire, release, contention and the same-node double-lock refusal.
 
-#include <chrono>
 #include <cstdint>
 #include <future>
 #include <string>
 #include <vector>
 
 #include "cme/shared.hpp"
+#include "common/timing.hpp"
 #include "harness/probe.hpp"
 #include "harness/temp_file.hpp"
 #include "turn/internal/cme_turn.hpp"
@@ -37,16 +37,16 @@ std::string formatRegion(const std::string& path)
 // What the serve loop does with a busy domain: ask again until it is free or the deadline passes.
 // One try can also miss on a loaded machine, since it spends a slice rather than waiting, so a case
 // that wants the domain asks the way the loop does.
-bool takeWithin(CmeTurn& node, const std::string& domain, std::chrono::milliseconds within)
+bool takeWithin(CmeTurn& node, const std::string& domain, timing::Millis within)
 {
-    const auto deadline = std::chrono::steady_clock::now() + within;
+    const timing::Deadline deadline{within};
     do
     {
         if (node.tryAcquireHere(domain))
         {
             return true;
         }
-    } while (std::chrono::steady_clock::now() < deadline);
+    } while (!deadline.expired());
     return false;
 }
 
@@ -55,7 +55,7 @@ bool takeWithin(CmeTurn& node, const std::string& domain, std::chrono::milliseco
 std::int32_t takeOnWaiter(CmeTurn& node, const std::string& domain)
 {
     std::promise<std::int32_t> answered;
-    node.awaitDomain(domain, std::chrono::seconds{2},
+    node.awaitDomain(domain, timing::Secs{2},
                      [&answered](std::int32_t status)
                      {
                          answered.set_value(status);
@@ -72,13 +72,13 @@ void checkTurnExclusion(fsdaemon::probe::Context& ctx)
     CmeTurn nodeA{uri, domains};
     CmeTurn nodeB{uri, domains};
 
-    ctx.check(takeWithin(nodeA, "turn.d", std::chrono::seconds{2}), "node A takes the domain");
+    ctx.check(takeWithin(nodeA, "turn.d", timing::Secs{2}), "node A takes the domain");
     ctx.check(nodeA.holds("turn.d"), "node A holds it");
     ctx.check(!nodeB.tryAcquireHere("turn.d"), "node B cannot take it while A holds it");
 
     ctx.check(nodeA.release("turn.d"), "node A gives it back");
     ctx.check(!nodeA.holds("turn.d"), "node A no longer holds it");
-    ctx.check(takeWithin(nodeB, "turn.d", std::chrono::seconds{2}), "node B takes it once free");
+    ctx.check(takeWithin(nodeB, "turn.d", timing::Secs{2}), "node B takes it once free");
     ctx.check(nodeB.release("turn.d"), "node B gives it back");
 }
 
@@ -88,7 +88,7 @@ void refuseDoubleLock(fsdaemon::probe::Context& ctx)
     const std::string uri = formatRegion(region.getPath());
     CmeTurn node{uri, std::vector<std::string>{"turn.d"}};
 
-    ctx.check(takeWithin(node, "turn.d", std::chrono::seconds{2}), "the domain is taken");
+    ctx.check(takeWithin(node, "turn.d", timing::Secs{2}), "the domain is taken");
     ctx.check(!node.tryAcquireHere("turn.d"),
               "a second lock for a domain already held here is refused");
     ctx.check(node.release("turn.d"), "the domain is given back");
@@ -108,7 +108,7 @@ void checkRepeatedUnlock(fsdaemon::probe::Context& ctx)
     ctx.check(node.release("turn.d"), "the first unlock hands the drop to the waiter");
     ctx.check(!node.release("turn.d"), "a second unlock before the drop ran reads as a repeat");
 
-    ctx.check(takeWithin(node, "turn.d", std::chrono::seconds{2}), "the loop takes the domain once dropped");
+    ctx.check(takeWithin(node, "turn.d", timing::Secs{2}), "the loop takes the domain once dropped");
     // The waiter runs its queue in order, so an answer for another domain means every drop queued
     // before it has run.
     ctx.check(takeOnWaiter(node, "turn.e") == 0, "the waiter drains what it had queued");

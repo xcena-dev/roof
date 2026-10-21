@@ -15,7 +15,6 @@
 #include <filesystem>
 #include <iterator>
 #include <optional>
-#include <ratio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -25,6 +24,7 @@
 #include <vector>
 
 #include "common/kv_config.hpp"
+#include "common/timing.hpp"
 #include "config/internal/mount_table.hpp"
 #include "name.hpp"
 #include "tools_uapi.h"
@@ -54,7 +54,7 @@ std::string resolveNextToConfig(std::string_view configPath, const std::string& 
 
 // A duration written as a number with an "ms" or "s" suffix, or as a bare number of seconds. Throws
 // on a value that will not parse, so a typo is loud.
-std::chrono::duration<double> parseDuration(std::string_view text)
+timing::SecsF parseDuration(std::string_view text)
 {
     constexpr std::string_view MillisSuffix = "ms";
 
@@ -64,13 +64,13 @@ std::chrono::duration<double> parseDuration(std::string_view text)
         if (body.size() > MillisSuffix.size() && body.substr(body.size() - MillisSuffix.size()) == MillisSuffix)
         {
             const auto millis = body.substr(0, body.size() - MillisSuffix.size());
-            return std::chrono::duration<double, std::milli>{std::stod(std::string{millis})};
+            return timing::MillisF{std::stod(std::string{millis})};
         }
         if (body.size() > 1 && body.back() == 's')
         {
-            return std::chrono::duration<double>{std::stod(std::string{body.substr(0, body.size() - 1)})};
+            return timing::SecsF{std::stod(std::string{body.substr(0, body.size() - 1)})};
         }
-        return std::chrono::duration<double>{std::stod(std::string{body})};
+        return timing::SecsF{std::stod(std::string{body})};
     }
     catch (const std::exception&)
     {
@@ -407,9 +407,9 @@ std::string makeRegionUri(std::string_view mountPoint)
     return std::string{"file:"}.append(mountPoint).append("/").append(FS_LOCK_REGION_NAME);
 }
 
-std::chrono::milliseconds Config::getRequestTimeout() const
+timing::Millis Config::getRequestTimeout() const
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(upcallRequestTimeout_);
+    return std::chrono::duration_cast<timing::Millis>(upcallRequestTimeout_);
 }
 
 std::string Config::getChannelPath() const

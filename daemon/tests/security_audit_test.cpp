@@ -6,11 +6,10 @@
 // Four fields on an audit line come from outside this daemon: the group and role a SPIFFE id names,
 // and the rule and reason a policy answers with. A newline in any of them ends the record early.
 
-#include <chrono>
-#include <ratio>
 #include <string>
 
 #include "audit/audit.hpp"
+#include "common/timing.hpp"
 #include "harness/probe.hpp"
 
 namespace
@@ -28,7 +27,7 @@ Record_t allowRecord()
     record.kind = Record_t::Kind::Access;
     record.seq = 1;
     record.pid = 4242;
-    record.latency = std::chrono::duration<double, std::milli>{1.0};
+    record.latency = timing::MillisF{1.0};
     record.hasIdentity = true;
     record.group = "prod";
     record.role = "llm-worker";

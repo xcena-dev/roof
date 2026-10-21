@@ -23,7 +23,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +32,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "helper_common.hpp"
 #include "mount_table.hpp"
 #include "tools_uapi.h"
@@ -40,7 +40,7 @@
 namespace
 {
 constexpr std::uint32_t PrepareAttempts = 3;
-constexpr std::chrono::seconds PrepareRetryWait{1};
+constexpr timing::Secs PrepareRetryWait{1};
 
 // The errno the kernel refused the clean step with, or 0 once it ran. A mount with no such file
 // has no clean step to ask for.

@@ -5,7 +5,6 @@
 
 #include "policy/internal/local.hpp"
 
-#include <atomic>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/ordered.hpp"
 #include "model.hpp"
 #include "name.hpp"
 #include "policy/base.hpp"
@@ -116,7 +116,7 @@ Decision_t LocalPolicyEngine::decide(const fsdaemon::Identity_t& consumer, std::
         }
     }
 
-    const auto generation = generation_.load(std::memory_order_acquire);
+    const auto generation = generation_.load();
     const auto result = evaluate(input);
     const auto decision = result.empty() ? makeDenial("regorus evaluation failed")
                                          : readDecision(result);
@@ -124,7 +124,7 @@ Decision_t LocalPolicyEngine::decide(const fsdaemon::Identity_t& consumer, std::
     const std::lock_guard guard{cacheGuard_};
     // A reload since the clone above means this decision may answer for a policy nobody serves any
     // more, so it stays out of the cache rather than outliving the reload that superseded it.
-    if (generation == generation_.load(std::memory_order_acquire))
+    if (generation == generation_.load())
     {
         cache_.emplace(input, decision);
     }
@@ -168,7 +168,7 @@ void LocalPolicyEngine::reload()
     }
     // Ordered before the clear below: a decide() that reads this after seeing the clear must also
     // see the bump, so it never re-inserts what the clear just removed.
-    generation_.fetch_add(1, std::memory_order_release);
+    generation_.add(1);
     const std::lock_guard cacheHold{cacheGuard_};
     cache_.clear();
 }

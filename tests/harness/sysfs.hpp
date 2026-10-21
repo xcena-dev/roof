@@ -13,7 +13,6 @@
 #pragma once
 
 #include <charconv>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -26,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "name.h"
 
 namespace fsuser::tests
@@ -323,16 +323,15 @@ struct PoolInfo_t
 // How many sweeps a case waits for before reading what one gave back. Two and not one, because a
 // cycle already under way when the state changed may have read it before.
 constexpr std::int32_t SweepsToWait = 2;
-constexpr std::int32_t SweepDeadlineSeconds = 60;
-constexpr std::int32_t SweepPollMillis = 250;
+constexpr timing::Secs SweepDeadline{60};
+constexpr timing::Millis SweepPoll{250};
 
 // Bounded, so a GC that stopped ends a case with a failed check instead of hanging it. False also
 // when gc_status stops answering for @nodeId, which is the same thing from the caller's side.
 [[nodiscard]] inline bool waitForSweeps(std::uint32_t nodeId, std::int64_t from)
 {
-    const auto until =
-        std::chrono::steady_clock::now() + std::chrono::seconds(SweepDeadlineSeconds);
-    while (std::chrono::steady_clock::now() < until)
+    const timing::Deadline until{SweepDeadline};
+    while (!until.expired())
     {
         const auto now = readSweepCount(nodeId);
         if (now < 0)
@@ -343,7 +342,7 @@ constexpr std::int32_t SweepPollMillis = 250;
         {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(SweepPollMillis));
+        std::this_thread::sleep_for(SweepPoll);
     }
     return false;
 }

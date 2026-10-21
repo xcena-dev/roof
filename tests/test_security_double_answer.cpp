@@ -23,9 +23,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -46,6 +44,8 @@
 #ifndef _Static_assert
 #define _Static_assert static_assert
 #endif
+#include "common/ordered.hpp"
+#include "common/timing.hpp"
 #include "daemon_uapi.h"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
@@ -78,7 +78,7 @@ constexpr std::int32_t ReversalAttempts = 100;
 constexpr std::size_t RequestFrameBytes = sizeof(fs_daemon_hdr) + sizeof(fs_daemon_access_request);
 
 // How long a caller waits for the ACCESS request its own forked child should have raised.
-constexpr std::chrono::milliseconds AccessRequestWait{5000};
+constexpr timing::Millis AccessRequestWait{5000};
 
 struct AccessRequestFrame_t
 {
@@ -269,7 +269,7 @@ public:
 
     // The next ACCESS request the kernel sent, or false when none arrived within @within.
     [[nodiscard]] bool takeAccessRequest(AccessRequestFrame_t& into,
-                                         std::chrono::milliseconds within)
+                                         timing::Millis within)
     {
         std::unique_lock<std::mutex> holding{guard_};
         if (!arrived_.wait_for(holding, within, [this]
@@ -348,7 +348,7 @@ private:
     std::mutex guard_;
     std::condition_variable arrived_;
     std::deque<AccessRequestFrame_t> waiting_;
-    std::atomic<bool> stopping_{false};
+    ordered::SeqCst<bool> stopping_{false};
     std::thread worker_;
 };
 

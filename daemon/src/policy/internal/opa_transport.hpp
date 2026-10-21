@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include <chrono>
 #include <string>
 
+#include "common/timing.hpp"
 #include "policy/internal/opa.hpp"
 
 namespace fsdaemon::policy
@@ -18,7 +18,7 @@ namespace fsdaemon::policy
 
 // POSTs application/json with @timeout for the whole exchange. A non-empty @unixSocketPath is what
 // the request travels over, and the url's host then only fills the Host header.
-[[nodiscard]] OpaTransport makeCurlTransport(std::chrono::milliseconds timeout,
+[[nodiscard]] OpaTransport makeCurlTransport(timing::Millis timeout,
                                              std::string unixSocketPath);
 
 }  // namespace fsdaemon::policy

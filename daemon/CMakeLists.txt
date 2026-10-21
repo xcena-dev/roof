@@ -70,10 +70,16 @@ target_include_directories(daemon_includes INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${FS_GEN}")
 
-# cme lives in its own tree. Only its header-only YAML subset (cme_common) is needed until turn
-# comes in. The libcme link waits behind DAEMON_ENABLE_TURN, so the core does not need a cme build.
-set(DAEMON_CME_DIR "$ENV{HOME}/cme" CACHE PATH "the cme source tree, for cme_common and libcme")
+# cme lives in its own tree, and only the turn backend links libcme from it. That link waits behind
+# DAEMON_ENABLE_TURN, so the core needs no cme tree at all.
+set(DAEMON_CME_DIR "$ENV{HOME}/cme" CACHE PATH "the cme source tree, for libcme")
 option(DAEMON_ENABLE_TURN "Link libcme for cross-node lock/unlock" OFF)
+
+# The header-only helpers this tree shares with cme sit in its common/.
+if(NOT TARGET fs-common)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../common" "${CMAKE_CURRENT_BINARY_DIR}/common")
+endif()
+target_link_libraries(daemon_includes INTERFACE fs-common)
 
 # ── The daemon's own code ───────────────────────────────────────────────
 # One archive the probes and main link. Sources are listed as each lands, so a file that stops
@@ -98,12 +104,11 @@ find_package(OpenSSL REQUIRED)
 target_link_libraries(daemon_core PRIVATE OpenSSL::Crypto)
 
 # ── Config and audit ────────────────────────────────────────────────────
-# config reads config.yaml with cme's header-only key-value reader, so it takes cme_common's include
-# path (no link). audit rides along here; it needs neither cme nor a heavy dependency.
+# config reads config.yaml with the shared header-only key-value reader. audit rides along here; it
+# needs no heavy dependency.
 add_library(daemon_config STATIC
     src/config/config.cpp
     src/config/internal/mount_table.cpp)
-target_include_directories(daemon_config PUBLIC "${DAEMON_CME_DIR}/common")
 target_link_libraries(daemon_config PUBLIC daemon_includes PRIVATE daemon_warnings)
 
 # ── The policy decision, shared by every backend ─────────────────────────

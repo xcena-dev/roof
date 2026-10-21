@@ -8,13 +8,13 @@
 #include <curl/curl.h>
 #include <curl/easy.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "common/timing.hpp"
 #include "policy/internal/opa.hpp"
 
 namespace fsdaemon::policy
@@ -39,7 +39,7 @@ std::size_t appendBody(char* data, std::size_t size, std::size_t count, void* us
 // Runs one POST and returns the body, or throws OpaTransportError. Held out of the lambda so the
 // header list and the handle are freed on every path, including a throw.
 std::string postOnce(const std::string& url, const std::string& requestBody,
-                     const std::string& unixSocketPath, std::chrono::milliseconds timeout)
+                     const std::string& unixSocketPath, timing::Millis timeout)
 {
     const std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle{curl_easy_init(), curl_easy_cleanup};
     if (!handle)
@@ -86,7 +86,7 @@ std::string postOnce(const std::string& url, const std::string& requestBody,
 }  // namespace
 
 // Each call opens and closes its own handle, so several worker threads may use one of these at once.
-OpaTransport makeCurlTransport(std::chrono::milliseconds timeout, std::string unixSocketPath)
+OpaTransport makeCurlTransport(timing::Millis timeout, std::string unixSocketPath)
 {
     return [timeout, socketPath = std::move(unixSocketPath)](const std::string& url, const std::string& requestBody)
     {

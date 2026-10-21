@@ -9,7 +9,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -17,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/ordered.hpp"
 #include "model.hpp"
 #include "policy/base.hpp"
 #include "regorus/engine.hpp"
@@ -54,7 +54,7 @@ private:
 
     // Bumped by reload() before it clears cache_, so a decide() that cloned base_ before the reload
     // can tell its answer belongs to a superseded generation and skip caching it.
-    std::atomic<std::uint64_t> generation_{0};
+    ordered::Published<std::uint64_t> generation_;
 
     std::mutex cacheGuard_;
     std::unordered_map<std::string, Decision_t> cache_;

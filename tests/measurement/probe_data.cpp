@@ -25,17 +25,16 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
-#include <ratio>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 
@@ -45,16 +44,9 @@ namespace
 using fsuser::tests::Mount;
 using fsuser::tests::PlacementSize;
 
-using Clock = std::chrono::steady_clock;
-
 constexpr std::uint32_t LeastRounds = 4;
 constexpr std::uint64_t LineBytes = 64;
 constexpr std::uint64_t DefaultRead = 4096;
-
-[[nodiscard]] double takeElapsedUs(Clock::time_point began, Clock::time_point ended)
-{
-    return std::chrono::duration<double, std::micro>{ended - began}.count();
-}
 
 void printPhase(std::string_view tag, std::string_view phase, std::vector<double>& samples)
 {
@@ -82,9 +74,9 @@ void printPhase(std::string_view tag, std::string_view phase, std::vector<double
     std::vector<char> sink(bytes);
     for (std::uint32_t round = 0; round < rounds; ++round)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto got = ::pread(handle, sink.data(), bytes, 0);
-        const auto took = takeElapsedUs(began, Clock::now());
+        const auto took = began.elapsed<timing::MicrosF>().count();
         if (got < 0)
         {
             std::perror("pread");
@@ -105,12 +97,12 @@ void runLinePass(void* mapped, std::uint32_t rounds, std::vector<double>& sample
 
     for (std::uint32_t round = 0; round < rounds; ++round)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         for (std::uint64_t index = 0; index < words; index += stride)
         {
             bytes[index] = index;
         }
-        samples.push_back(takeElapsedUs(began, Clock::now()));
+        samples.push_back(began.elapsed<timing::MicrosF>().count());
     }
 }
 
@@ -120,9 +112,9 @@ void runRemap(std::int32_t handle, std::uint32_t rounds, std::vector<double>& sa
 {
     for (std::uint32_t round = 0; round < rounds; ++round)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         void* mapped = ::mmap(nullptr, PlacementSize, PROT_READ | PROT_WRITE, MAP_SHARED, handle, 0);
-        const auto took = takeElapsedUs(began, Clock::now());
+        const auto took = began.elapsed<timing::MicrosF>().count();
         if (mapped == MAP_FAILED)
         {
             std::perror("mmap");

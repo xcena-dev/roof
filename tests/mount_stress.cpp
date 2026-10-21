@@ -23,7 +23,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +33,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/listing.hpp"
 #include "harness/mount.hpp"
@@ -56,8 +56,8 @@ constexpr std::int32_t SharedRound = Rounds;
 
 // How long a node waits to see every other node's slice, and how often it looks. The write it is
 // waiting for is one uncached store, so the wait is for the peer to be scheduled and not for a flush.
-constexpr std::int32_t SharedDeadlineMillis = 10000;
-constexpr std::int32_t SharedPollMillis = 2;
+constexpr timing::Millis SharedDeadline{10000};
+constexpr timing::Millis SharedPoll{2};
 
 using fsuser::tests::Baton;
 using fsuser::tests::caseName;
@@ -150,8 +150,7 @@ using fsuser::tests::readRegionRows;
 // takes the deadline with it instead of blocking the rest forever.
 [[nodiscard]] std::optional<std::int32_t> findMissingSlice(const std::uint8_t* bytes, std::int32_t nodes)
 {
-    const auto until = std::chrono::steady_clock::now() +
-                       std::chrono::milliseconds(SharedDeadlineMillis);
+    const timing::Deadline until{SharedDeadline};
 
     for (std::int32_t other = 0; other < nodes; ++other)
     {
@@ -160,11 +159,11 @@ using fsuser::tests::readRegionRows;
 
         while (!sliceHolds(slice, stamp, StampBytes))
         {
-            if (std::chrono::steady_clock::now() > until)
+            if (until.expired())
             {
                 return other;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(SharedPollMillis));
+            std::this_thread::sleep_for(SharedPoll);
         }
     }
     return std::nullopt;

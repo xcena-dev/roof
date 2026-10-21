@@ -35,6 +35,7 @@ endif()
 
 enable_testing()
 
+add_subdirectory(common)
 add_subdirectory(libroof)
 
 # The suite calls the library by its neutral namespace, so a published build has nothing for it

@@ -9,11 +9,12 @@
 
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
+
+#include "common/timing.hpp"
 
 namespace fsdaemon::turn
 {
@@ -50,7 +51,7 @@ public:
     // Waits for @domain up to @timeout on a thread of this service's own, then calls @answer with
     // the outcome. The wait happens inside the region's own queue rather than as a retry from
     // outside it, so a node that asked first is not overtaken by one that asked later.
-    virtual void awaitDomain(const std::string& domain, std::chrono::nanoseconds timeout, Answer answer) = 0;
+    virtual void awaitDomain(const std::string& domain, timing::Nanos timeout, Answer answer) = 0;
 
     // Gives @domain back, on whichever thread took it. False when this node was not holding it,
     // which a repeated unlock reads as.

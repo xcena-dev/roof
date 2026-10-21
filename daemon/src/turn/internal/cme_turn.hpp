@@ -13,7 +13,6 @@
 
 #pragma once
 
-#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <map>
@@ -25,6 +24,7 @@
 #include <vector>
 
 #include "cme/shared_session.hpp"
+#include "common/timing.hpp"
 #include "turn/service.hpp"
 
 namespace fsdaemon::turn
@@ -39,7 +39,7 @@ public:
     ~CmeTurn() override;
 
     [[nodiscard]] bool tryAcquireHere(const std::string& domain) override;
-    void awaitDomain(const std::string& domain, std::chrono::nanoseconds timeout, Answer answer) override;
+    void awaitDomain(const std::string& domain, timing::Nanos timeout, Answer answer) override;
     [[nodiscard]] bool release(const std::string& domain) override;
 
     // Whether this node holds @domain right now.
@@ -56,7 +56,7 @@ private:
 
     // Takes @domain within @timeout and records which thread may give it back. Both takes are this
     // one call under a different thread and a different deadline.
-    [[nodiscard]] bool takeDomain(const std::string& domain, std::chrono::nanoseconds timeout, Taker taker);
+    [[nodiscard]] bool takeDomain(const std::string& domain, timing::Nanos timeout, Taker taker);
 
     void runWaiter();
     void stopWaiter() noexcept;

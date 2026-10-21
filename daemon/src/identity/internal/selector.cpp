@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "identity/base.hpp"
 #include "model.hpp"
 #include "posix/unique_fd.hpp"
@@ -151,8 +152,8 @@ struct ExeStamp_t
 {
     std::uint64_t device{};
     std::uint64_t inode{};
-    std::chrono::nanoseconds written{};
-    std::chrono::nanoseconds changed{};
+    timing::Nanos written{};
+    timing::Nanos changed{};
     std::uint64_t bytes{};
 
     bool operator==(const ExeStamp_t& other) const noexcept
@@ -174,27 +175,27 @@ bool isStampSettled(const ExeStamp_t& stamp) noexcept
     {
         return false;
     }
-    return std::chrono::duration_cast<std::chrono::seconds>(stamp.changed) < std::chrono::seconds{now.tv_sec};
+    return std::chrono::duration_cast<timing::Secs>(stamp.changed) < timing::Secs{now.tv_sec};
 }
 
 // A filesystem holds times past what a nanosecond count reaches, and a stamp only ever tests
 // equality, so one that far out saturates instead of overflowing the count.
-constexpr std::chrono::nanoseconds makeFileTime(const ::timespec& when) noexcept
+constexpr timing::Nanos makeFileTime(const ::timespec& when) noexcept
 {
-    constexpr auto Countable = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::nanoseconds::max());
+    constexpr auto Countable = std::chrono::duration_cast<timing::Secs>(timing::Nanos::max());
     // The count runs out partway through its last second, so that second is checked to the nanosecond.
-    constexpr auto LastPart = std::chrono::nanoseconds::max() - Countable;
+    constexpr auto LastPart = timing::Nanos::max() - Countable;
 
-    const std::chrono::seconds whole{when.tv_sec};
-    const std::chrono::nanoseconds part{when.tv_nsec};
+    const timing::Secs whole{when.tv_sec};
+    const timing::Nanos part{when.tv_nsec};
     if (whole > Countable || (whole == Countable && part > LastPart))
     {
-        return std::chrono::nanoseconds::max();
+        return timing::Nanos::max();
     }
     // tv_nsec is never negative, so a whole second inside the count cannot be pushed under it.
     if (whole < -Countable)
     {
-        return std::chrono::nanoseconds::min();
+        return timing::Nanos::min();
     }
     return whole + part;
 }

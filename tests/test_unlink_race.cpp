@@ -20,11 +20,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <string>
 
+#include "common/timing.hpp"
 #include "fs/errors.hpp"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
@@ -43,7 +43,7 @@ using fsuser::tests::readSweepCount;
 using fsuser::tests::waitForSweeps;
 
 constexpr std::uint64_t PlacedWords = PlacementSize / sizeof(std::uint32_t);
-constexpr std::int32_t RaceSeconds = 10;
+constexpr timing::Secs RaceBudget{10};
 
 // The first word is the seed itself, so a reader recovers the seed from the bytes and needs no
 // side channel to judge the rest.
@@ -94,17 +94,12 @@ struct Tally_t
     std::int32_t skipped{0};
 };
 
-[[nodiscard]] bool timeIsUp(std::chrono::steady_clock::time_point until)
-{
-    return std::chrono::steady_clock::now() >= until;
-}
-
 // One node's loop over its own names: make, fill, read back, unlink, again.
 [[nodiscard]] Tally_t churnOwnNames(fsuser::tests::Mount& mount, const std::string& stem, std::uint32_t seedBase)
 {
     Tally_t tally;
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(RaceSeconds);
-    while (!timeIsUp(until))
+    const timing::Deadline until{RaceBudget};
+    while (!until.expired())
     {
         const auto name = stem + std::to_string(tally.rounds);
         const std::uint32_t seed = seedBase + static_cast<std::uint32_t>(tally.rounds);
@@ -142,8 +137,8 @@ struct Tally_t
 [[nodiscard]] Tally_t churnSharedName(fsuser::tests::Mount& mount, const std::string& name)
 {
     Tally_t tally;
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(RaceSeconds);
-    while (!timeIsUp(until))
+    const timing::Deadline until{RaceBudget};
+    while (!until.expired())
     {
         const std::uint32_t seed = SharedSeedBase + static_cast<std::uint32_t>(tally.rounds);
         try
@@ -173,8 +168,8 @@ struct Tally_t
 [[nodiscard]] Tally_t readSharedName(fsuser::tests::Mount& mount, const std::string& name)
 {
     Tally_t tally;
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(RaceSeconds);
-    while (!timeIsUp(until))
+    const timing::Deadline until{RaceBudget};
+    while (!until.expired())
     {
         try
         {

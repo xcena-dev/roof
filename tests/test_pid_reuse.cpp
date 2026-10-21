@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +24,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 #include "harness/probe.hpp"
@@ -51,8 +51,8 @@ constexpr std::int32_t LapBurners = 16;
 constexpr std::int64_t LapApproach = 30000;
 
 // A lap that has not come round by here is a lap something else is interfering with.
-constexpr std::int64_t LapDeadlineSeconds = 900;
-constexpr std::int64_t LapPollMillis = 100;
+constexpr timing::Secs LapDeadline{900};
+constexpr timing::Millis LapPoll{100};
 
 constexpr const char* LastPidPath = "/proc/sys/kernel/ns_last_pid";
 constexpr const char* PidCeilingPath = "/proc/sys/kernel/pid_max";
@@ -179,15 +179,14 @@ enum class Outcome : std::int32_t
         }
     }
 
-    const auto until =
-        std::chrono::steady_clock::now() + std::chrono::seconds(LapDeadlineSeconds);
+    const timing::Deadline until{LapDeadline};
     bool wrapped = false;
     bool arrived = false;
     std::int64_t seen = readNumber(LastPidPath);
 
-    while (std::chrono::steady_clock::now() < until)
+    while (!until.expired())
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(LapPollMillis));
+        std::this_thread::sleep_for(LapPoll);
         const std::int64_t now = readNumber(LastPidPath);
         if (now < 0)
         {

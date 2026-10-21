@@ -31,17 +31,16 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <ratio>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 #include "harness/stats.hpp"
@@ -54,8 +53,6 @@ using fsuser::tests::MetaTurns_t;
 using fsuser::tests::Mount;
 using fsuser::tests::PlacementSize;
 using fsuser::tests::readMetaTurns;
-
-using Clock = std::chrono::steady_clock;
 
 // Below four a percentile lands on the same sample twice, which reads as a spread that is not there.
 constexpr std::uint32_t LeastRounds = 4;
@@ -80,11 +77,6 @@ struct Round_t
     double took{0.0};
 };
 
-[[nodiscard]] double takeElapsedUs(Clock::time_point began, Clock::time_point ended)
-{
-    return std::chrono::duration<double, std::micro>{ended - began}.count();
-}
-
 // Spun rather than slept: a sleep's own wakeup would land inside the window the next call is timed
 // in, and a few tens of microseconds is below what the scheduler resolves.
 void idleFor(std::uint32_t gapUs)
@@ -93,8 +85,8 @@ void idleFor(std::uint32_t gapUs)
     {
         return;
     }
-    const auto until = Clock::now() + std::chrono::microseconds{gapUs};
-    while (Clock::now() < until)
+    const timing::Deadline gap{timing::Micros{gapUs}};
+    while (!gap.expired())
     {
     }
 }
@@ -162,9 +154,9 @@ void printPhase(std::string_view tag, std::string_view phase, const std::vector<
     for (auto& round : rounds)
     {
         idleFor(gapUs);
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         round.handle = ::open(round.name.c_str(), O_CREAT | O_RDWR | O_EXCL | O_CLOEXEC, 0644);
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (round.handle < 0)
         {
             std::perror("open O_CREAT");
@@ -180,9 +172,9 @@ void printPhase(std::string_view tag, std::string_view phase, const std::vector<
     for (auto& round : rounds)
     {
         idleFor(gapUs);
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto failed = ::ftruncate(round.handle, static_cast<::off_t>(PlacementSize));
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (failed != 0)
         {
             std::perror("ftruncate");
@@ -198,10 +190,10 @@ void printPhase(std::string_view tag, std::string_view phase, const std::vector<
 {
     for (auto& round : rounds)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         round.mapped = ::mmap(nullptr, PlacementSize, PROT_READ | PROT_WRITE, MAP_SHARED,
                               round.handle, 0);
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (round.mapped == MAP_FAILED)
         {
             round.mapped = nullptr;
@@ -218,9 +210,9 @@ void runFault(std::vector<Round_t>& rounds)
     for (auto& round : rounds)
     {
         const auto* first = static_cast<const volatile unsigned char*>(round.mapped);
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto seen = *first;
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         (void)seen;
     }
 }
@@ -230,9 +222,9 @@ void runLookup(std::vector<Round_t>& rounds)
 {
     for (auto& round : rounds)
     {
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto opened = ::open(round.name.c_str(), O_RDONLY | O_CLOEXEC);
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (opened >= 0)
         {
             ::close(opened);
@@ -245,9 +237,9 @@ void runUnlink(std::vector<Round_t>& rounds, std::uint32_t gapUs)
     for (auto& round : rounds)
     {
         idleFor(gapUs);
-        const auto began = Clock::now();
+        const timing::Stopwatch began;
         const auto failed = ::unlink(round.name.c_str());
-        round.took = takeElapsedUs(began, Clock::now());
+        round.took = began.elapsed<timing::MicrosF>().count();
         if (failed != 0)
         {
             std::perror("unlink");

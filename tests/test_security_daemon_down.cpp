@@ -24,16 +24,16 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <string>
 #include <system_error>
-#include <thread>
 #include <utility>
 
+#include "common/poll.hpp"
+#include "common/timing.hpp"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
@@ -62,8 +62,8 @@ constexpr ::uid_t RowUid = 60200;
 constexpr ::uid_t StrangerUid = 60201;
 
 // How long the case waits for the channel to change hands, which is a unit stopping or starting.
-constexpr std::int32_t ChannelDeadlineMs = 8000;
-constexpr std::int32_t ChannelPollMs = 50;
+constexpr timing::Millis ChannelDeadline{8000};
+constexpr timing::Millis ChannelPoll{50};
 
 // Stops @unit for its lifetime and starts it again on the way out, whichever way that happens.
 class HelperServiceGuard
@@ -131,16 +131,12 @@ private:
 // it. Answers whether the channel reached @wanted before the deadline.
 [[nodiscard]] bool waitForChannelReader(std::uint32_t node, bool wanted)
 {
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ChannelDeadlineMs);
-    while (std::chrono::steady_clock::now() < until)
-    {
-        if (channelHasReader(node) == wanted)
+    return polling::waitUntil(
+        [node, wanted]
         {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(ChannelPollMs));
-    }
-    return false;
+            return channelHasReader(node) == wanted;
+        },
+        ChannelDeadline, ChannelPoll);
 }
 
 // Reads one byte, which is the other data path that asks the daemon when no row covers the caller.

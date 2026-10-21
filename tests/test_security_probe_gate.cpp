@@ -22,9 +22,7 @@
 #include <unistd.h>
 
 #include <array>
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,6 +40,9 @@
 #ifndef _Static_assert
 #define _Static_assert static_assert
 #endif
+#include "common/ordered.hpp"
+#include "common/poll.hpp"
+#include "common/timing.hpp"
 #include "daemon_uapi.h"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
@@ -79,8 +80,8 @@ constexpr std::uint32_t ShortWaitMs = 400;
 // an admission refused at once, with room for a loaded host.
 constexpr std::int64_t PromptRefusalMs = 500;
 
-constexpr std::int32_t SettleDeadlineMs = 8000;
-constexpr std::int32_t SettlePollMs = 20;
+constexpr timing::Millis SettleDeadline{8000};
+constexpr timing::Millis SettlePoll{20};
 
 // Room for the largest request shape the kernel sends, which a read needs before the header says
 // which shape arrived.
@@ -280,7 +281,7 @@ constexpr std::int32_t ServePollMs = 100;
 
 // Answers LOCK with the turn until @stopping is set, counting every frame it was handed. It waits
 // in poll rather than in read, since closing the channel never wakes a thread already inside read.
-void serveLocks(std::int32_t device, std::atomic<std::int32_t>& served, std::atomic<bool>& stopping)
+void serveLocks(std::int32_t device, ordered::SeqCst<std::int32_t>& served, ordered::SeqCst<bool>& stopping)
 {
     std::array<std::uint8_t, RequestFrameBytes> buffer{};
     while (!stopping.load())
@@ -310,7 +311,7 @@ void serveLocks(std::int32_t device, std::atomic<std::int32_t>& served, std::ato
 
         fs_daemon_hdr request{};
         std::memcpy(&request, buffer.data(), sizeof(request));
-        served.fetch_add(1);
+        served.add(1);
         if (request.type != static_cast<__u32>(FS_DAEMON_MSG_LOCK_REQUEST))
         {
             continue;
@@ -349,16 +350,12 @@ void serveLocks(std::int32_t device, std::atomic<std::int32_t>& served, std::ato
 
 [[nodiscard]] bool waitForLatch(std::uint32_t node)
 {
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(SettleDeadlineMs);
-    while (std::chrono::steady_clock::now() < until)
-    {
-        if (readChannelField(node, "helper_dead=") == 1)
+    return polling::waitUntil(
+        [node]
         {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(SettlePollMs));
-    }
-    return false;
+            return readChannelField(node, "helper_dead=") == 1;
+        },
+        SettleDeadline, SettlePoll);
 }
 
 // One caller of the region, run as @uid so the kernel judges it as that account. The descriptor is
@@ -458,8 +455,8 @@ void checkLatchAdmitsOneProbe(Report& report, fsuser::File& file, std::uint32_t 
     std::vector<::pid_t> starter{forkOneCaller(file.get(), CallerUid)};
     report.check("the channel latches on a request nobody answers", waitForLatch(node));
 
-    std::atomic<std::uint64_t> deepest{0};
-    std::atomic<bool> driving{true};
+    ordered::SeqCst<std::uint64_t> deepest{0};
+    ordered::SeqCst<bool> driving{true};
 
     std::thread sampler{[&]
                         {
@@ -470,15 +467,15 @@ void checkLatchAdmitsOneProbe(Report& report, fsuser::File& file, std::uint32_t 
                                 {
                                     deepest.store(depth);
                                 }
-                                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                                std::this_thread::sleep_for(timing::Millis{2});
                             }
                         }};
 
     // Forked afresh each round, because one caller's request ends when its wait does.
     std::int32_t racersRun = 0;
     std::int32_t refusedAtOnce = 0;
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(driveMs);
-    while (std::chrono::steady_clock::now() < until)
+    const timing::Deadline driveBudget{timing::Millis{driveMs}};
+    while (!driveBudget.expired())
     {
         std::vector<::pid_t> racers;
         for (std::int32_t racer = 0; racer < ProbeRacers; ++racer)
@@ -490,7 +487,7 @@ void checkLatchAdmitsOneProbe(Report& report, fsuser::File& file, std::uint32_t 
             }
         }
         racersRun += static_cast<std::int32_t>(racers.size());
-        std::this_thread::sleep_for(std::chrono::milliseconds(ShortWaitMs / 4));
+        std::this_thread::sleep_for(timing::Millis{ShortWaitMs / 4});
         refusedAtOnce += countFinished(racers);
         reapAll(racers);
     }
@@ -523,15 +520,13 @@ void checkUndeclaredKindIsRefused(Report& report, fsuser::File& file, std::uint3
         return;
     }
 
-    std::atomic<std::int32_t> served{0};
-    std::atomic<bool> stopping{false};
+    ordered::SeqCst<std::int32_t> served{0};
+    ordered::SeqCst<bool> stopping{false};
     std::thread responder{serveLocks, helper.get(), std::ref(served), std::ref(stopping)};
 
-    const auto beganAt = std::chrono::steady_clock::now();
+    const timing::Stopwatch refusal;
     const auto outcome = mapAsCaller(file.get(), CallerUid);
-    const auto tookMs = static_cast<std::int64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - beganAt)
-            .count());
+    const std::int64_t tookMs = refusal.elapsed<timing::Millis>().count();
 
     report.checkErrno("a mapping is refused by a helper that declared no ACCESS", outcome != 0, outcome);
     report.check("the refusal costs no wait at all: " + std::to_string(tookMs) + " ms",

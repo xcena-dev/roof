@@ -18,17 +18,16 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <optional>
-#include <ratio>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "fs/file.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
@@ -38,13 +37,6 @@ namespace
 {
 
 using fsuser::tests::PlacementSize;
-
-// A microsecond delta between two steady-clock reads.
-[[nodiscard]] double sinceUs(std::chrono::steady_clock::time_point began)
-{
-    const auto delta = std::chrono::steady_clock::now() - began;
-    return std::chrono::duration<double, std::micro>(delta).count();
-}
 
 // One CSV row: tag,phase,count,min,p50,p95,max,mean. Same shape probe_ops prints, minus the turn
 // column, since what this prices is the upcall and not a turn.
@@ -113,9 +105,9 @@ int main(int argc, char** argv)
         try
         {
             auto file = consumer.open(name, O_RDWR, 0);
-            const auto began = std::chrono::steady_clock::now();
+            const timing::Stopwatch began;
             auto mapping = file.map(PlacementSize, PROT_READ);
-            samples.push_back(sinceUs(began));
+            samples.push_back(began.elapsed<timing::MicrosF>().count());
         }
         catch (const std::exception& denied)
         {

@@ -10,13 +10,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "config/internal/mount_table.hpp"
 #include "harness/probe.hpp"
 #include "harness/temp_file.hpp"
@@ -90,7 +90,7 @@ void checkDurationUnits(fsdaemon::probe::Context& ctx)
 {
     const TempFile file{"upcall:\n  request_timeout: 250ms\n", "daemon-config"};
     const Config config = Config::load(file.getPath());
-    ctx.checkf(config.getRequestTimeout() == std::chrono::milliseconds{250},
+    ctx.checkf(config.getRequestTimeout() == timing::Millis{250},
                "250ms parses to a 250ms budget (%lld)",
                static_cast<long long>(config.getRequestTimeout().count()));
 }

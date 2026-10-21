@@ -24,7 +24,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Anything after it is another label it carries.
 function(fs_add_case name label)
     add_executable(${name} ${name}.cpp)
-    target_link_libraries(${name} PRIVATE fs-testing)
+    target_link_libraries(${name} PRIVATE fs-testing fs-common)
     target_include_directories(${name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
@@ -55,7 +55,7 @@ set_tests_properties(test_overlap PROPERTIES LABELS multinode SKIP_RETURN_CODE 7
 # Not a case: test_postexec_attack execs into it, and the inode a delegation binds to needs a second
 # executable to separate.
 add_executable(postexec_other postexec_other.cpp)
-target_link_libraries(postexec_other PRIVATE fs-testing)
+target_link_libraries(postexec_other PRIVATE fs-testing fs-common)
 target_include_directories(postexec_other PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
@@ -63,7 +63,7 @@ target_compile_options(postexec_other PRIVATE -Wall -Wextra -Wconversion -Wsign-
 
 # Not a case: test_perm_role launches it to map a file under a role of its own.
 add_executable(role_consumer role_consumer.cpp)
-target_link_libraries(role_consumer PRIVATE fs-testing)
+target_link_libraries(role_consumer PRIVATE fs-testing fs-common)
 target_include_directories(role_consumer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
@@ -189,7 +189,7 @@ foreach(securityCase test_security_deleg_revoke test_security_group_revoke
                      test_security_probe_gate test_security_daemon_down
                      test_security_ns_revoke)
     add_executable(${securityCase} ${securityCase}.cpp)
-    target_link_libraries(${securityCase} PRIVATE fs-testing)
+    target_link_libraries(${securityCase} PRIVATE fs-testing fs-common)
     target_include_directories(${securityCase} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)
@@ -232,7 +232,7 @@ target_compile_options(chaos_mapper PRIVATE -Wall -Wextra -Wconversion -Wsign-co
 # Not a case: rat_summary_crash runs it to hold a fragmented pool on the surviving node while the
 # other one dies placing into it.
 add_executable(pool_hold pool_hold.cpp)
-target_link_libraries(pool_hold PRIVATE fs-testing)
+target_link_libraries(pool_hold PRIVATE fs-testing fs-common)
 target_include_directories(pool_hold PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include)

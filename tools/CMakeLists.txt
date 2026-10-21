@@ -34,6 +34,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # one destination is not derived from CMAKE_INSTALL_PREFIX.
 set(FS_HELPER_DIR /sbin CACHE PATH "Where mount(8) looks for a type helper")
 
+# The header-only helpers this tree shares with cme sit in its common/.
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../common" "${CMAKE_CURRENT_BINARY_DIR}/common")
+
 # ── the mount helper ────────────────────────────────────────────────────
 # mount(8) picks the helper by the filesystem type it was given, so the name is the contract. It
 # formats the lock region and starts that node's helper by running the tools those need, so it links
@@ -43,6 +46,7 @@ set_target_properties(mount-helper PROPERTIES OUTPUT_NAME "mount.${FS_NAME}")
 # Every message it prints opens with that same name.
 target_compile_definitions(mount-helper PRIVATE FS_PROGRAM_NAME="mount.${FS_NAME}")
 target_include_directories(mount-helper PRIVATE ${FS_GENERATED_INCLUDE})
+target_link_libraries(mount-helper PRIVATE fs-common)
 
 # ── the umount helper ───────────────────────────────────────────────────
 # Stopping this node's helper and calling umount(2), which needs nothing of cme either.
@@ -50,6 +54,7 @@ add_executable(umount-helper umount_helper.cpp)
 set_target_properties(umount-helper PROPERTIES OUTPUT_NAME "umount.${FS_NAME}")
 target_compile_definitions(umount-helper PRIVATE FS_PROGRAM_NAME="umount.${FS_NAME}")
 target_include_directories(umount-helper PRIVATE ${FS_GENERATED_INCLUDE})
+target_link_libraries(umount-helper PRIVATE fs-common)
 
 foreach(helper mount-helper umount-helper)
     target_compile_options(${helper} PRIVATE -Wall -Wextra -Wconversion -Wsign-conversion)

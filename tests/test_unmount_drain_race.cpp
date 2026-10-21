@@ -10,14 +10,14 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <string>
 #include <thread>
 
+#include "common/ordered.hpp"
+#include "common/timing.hpp"
 #include "harness/harness.hpp"
 #include "harness/mount.hpp"
 #include "harness/slot.hpp"
@@ -32,7 +32,7 @@ using fsuser::tests::PlacementSize;
 
 constexpr std::uint32_t RefusalDelayMs = 1500;
 // Long enough for the first prepare to reach its delay, short against that delay.
-constexpr std::chrono::milliseconds EnterWait{300};
+constexpr timing::Millis EnterWait{300};
 constexpr const char* RefusalDelayPath =
     "/sys/module/" FS_NAME_STR "/parameters/unmount_prepare_refusal_delay_ms";
 
@@ -129,7 +129,7 @@ int main(int argc, char** argv)
     const RefusalDelayGuard delay{RefusalDelayMs};
     report.check("the refusal delay is set", delay.applied());
 
-    std::atomic<bool> firstReturned{false};
+    ordered::SeqCst<bool> firstReturned{false};
     std::int32_t firstErrno = -1;
     std::thread firstPrepare;
     {

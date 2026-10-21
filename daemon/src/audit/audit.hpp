@@ -11,16 +11,15 @@
 
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <ios>
 #include <mutex>
-#include <ratio>
 #include <sstream>
 #include <string>
 #include <string_view>
 
+#include "common/timing.hpp"
 #include "util/text.hpp"
 
 namespace fsdaemon::audit
@@ -39,7 +38,7 @@ struct Record_t
     Kind kind{Kind::Attest};
     std::uint64_t seq{0};
     std::uint32_t pid{0};
-    std::chrono::duration<double, std::milli> latency{0};
+    timing::MillisF latency{0};
 
     bool hasIdentity{false};
     std::string group;
@@ -49,7 +48,7 @@ struct Record_t
     bool hasDecision{false};
     bool allow{false};
     std::uint32_t grantedPerms{0};
-    std::chrono::seconds expiry{0};
+    timing::Secs expiry{0};
     std::string rule;
     std::string reason;
 

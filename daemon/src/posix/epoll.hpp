@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -23,6 +22,7 @@
 #include <system_error>
 #include <vector>
 
+#include "common/timing.hpp"
 #include "posix/unique_fd.hpp"
 
 namespace fsdaemon::posix
@@ -60,16 +60,9 @@ public:
     //
     // epoll_pwait2 and not epoll_wait: its timeout is a duration rather than whole milliseconds, so
     // a caller may ask for less than one and get what the timer can actually give.
-    [[nodiscard]] std::vector<Descriptor> wait(std::optional<std::chrono::nanoseconds> timeout = std::nullopt)
+    [[nodiscard]] std::vector<Descriptor> wait(std::optional<timing::Nanos> timeout = std::nullopt)
     {
-        ::timespec waiting{};
-        if (timeout)
-        {
-            const auto whole = std::chrono::duration_cast<std::chrono::seconds>(*timeout);
-            waiting.tv_sec = static_cast<::time_t>(whole.count());
-            // NOLINTNEXTLINE(google-runtime-int) tv_nsec is long, and POSIX is what names it
-            waiting.tv_nsec = static_cast<long>((*timeout - whole).count());
-        }
+        const ::timespec waiting = timeout ? timing::toTimespec(*timeout) : ::timespec{};
         const std::int32_t seen = ::epoll_pwait2(held_.get(), filled_.data(),
                                                  static_cast<int>(filled_.size()),
                                                  timeout ? &waiting : nullptr, nullptr);
