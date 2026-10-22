@@ -7,7 +7,7 @@ accounts:
   daemon: @FS_NAME@
   workload: @APP_USER@
 
-# One entry per mount point. Mounts may share a DAX device or each sit on their own.
+# One entry per mount point. Its devices are in device order, and the first is the primary.
 mounts:
 @MOUNTS@
 

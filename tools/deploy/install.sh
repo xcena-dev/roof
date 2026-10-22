@@ -5,6 +5,7 @@
 #
 #   sudo tools/deploy/install.sh --account app --device /dev/dax0.0
 #   sudo tools/deploy/install.sh --account app --mount /mnt/a=/dev/dax0.0 --mount /mnt/b=/dev/dax1.0
+#   sudo tools/deploy/install.sh --account app --mount /mnt/a=/dev/dax0.1,/dev/dax0.2
 #   sudo tools/deploy/install.sh --account app --no-start   # stop after the units are written
 #
 # It installs no binary of the cme project: cme-format comes from there, and the mount helper runs
@@ -37,7 +38,8 @@ install.sh -- groups, modes and units for running ${FS_NAME} unprivileged.
 
   --account NAME        the account the applications run as (default: the sudo caller)
   --device PATH         the DAX device a mount without one of its own sits on (default: /dev/dax0.0)
-  --mount PATH[=DEV]    a mount point, on DEV or on --device; repeat for more (default: /mnt/${FS_NAME})
+  --mount PATH[=DEV[,DEV...]]  a mount point, on its devices in device order (the first is the primary)
+                        or on --device; repeat for more (default: /mnt/${FS_NAME})
   --no-start            write everything but leave the mounts down
   --reset-cfg           replace ${CONFIG_FILE} and the policy with this tree's examples
   --skip-build          install what is already built, building only a part that is not there
@@ -94,13 +96,12 @@ if ! id "$ACCOUNT" >/dev/null 2>&1; then
 	exit 1
 fi
 
-# The mounts as "point device" lines: the config's when there is one to read, otherwise the flags,
-# which are what a config planted below starts with.
+# The config's mounts when there is one to read, otherwise the flags a planted config starts with.
 seedMounts() {
 	local seed
 	for seed in "${SEED_MOUNTS[@]}"; do
 		case "$seed" in
-		*=*) printf '%s %s\n' "${seed%%=*}" "${seed#*=}" ;;
+		*=*) printf '%s %s\n' "${seed%%=*}" "$(tr ',' ' ' <<<"${seed#*=}")" ;;
 		*) printf '%s %s\n' "$seed" "$DEVICE" ;;
 		esac
 	done
@@ -114,20 +115,22 @@ knownMounts() {
 	seedMounts
 }
 
-# Fills MOUNTS, MOUNT_DEVICES and DEVICES (each device once) from "point device" lines on stdin.
+# DEVICES holds each distinct device once, whatever number of mounts name it.
 takeMounts() {
-	local point device
+	local point listed device
 	MOUNTS=()
 	MOUNT_DEVICES=()
 	DEVICES=()
-	while read -r point device; do
+	while read -r point listed; do
 		[ -n "$point" ] || continue
 		MOUNTS+=("$point")
-		MOUNT_DEVICES+=("$device")
-		case " ${DEVICES[*]} " in
-		*" ${device} "*) ;;
-		*) DEVICES+=("$device") ;;
-		esac
+		MOUNT_DEVICES+=("$listed")
+		for device in $listed; do
+			case " ${DEVICES[*]} " in
+			*" ${device} "*) ;;
+			*) DEVICES+=("$device") ;;
+			esac
+		done
 	done
 }
 
@@ -340,9 +343,14 @@ for index in "${!MOUNTS[@]}"; do
 	area="$(areaNameFor "$mount")"
 	unit="$(unitNameFor "$mount")"
 
+	daxOptions=""
+	for device in ${MOUNT_DEVICES[$index]}; do
+		daxOptions+="daxdev=${device},"
+	done
+
 	sed -e "s|/mnt/${FS_NAME}\b|${mount}|g" \
 	    -e "s|mnt_${FS_NAME}\b|${area}|g" \
-	    -e "s|^Options=daxdev=[^,]*|Options=daxdev=${MOUNT_DEVICES[$index]}|" \
+	    -e "s|^Options=daxdev=[^,]*,|Options=${daxOptions}|" \
 	    "${rendered}/mount.mount" >"${UNITDIR}/${unit}"
 	chmod 0644 "${UNITDIR}/${unit}"
 	echo "install.sh: wrote ${UNITDIR}/${unit}"

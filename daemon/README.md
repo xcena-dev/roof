@@ -107,6 +107,9 @@ An edit to any other key the daemon reads refuses the whole reload,
 and that key takes a restart instead.
 `roofd --check-config` loads both files the way a reload would, without serving.
 A deploy script reads a key with `roofd --print-config <key>`, through the same parser.
+`--print-config mounts` prints one line per mount: the point, then its devices in order, split by single spaces.
+A mount lists one to seven devices, none twice.
+Two mounts may name the same device only by listing the same devices in the same order.
 
 ### `config.yaml`
 
@@ -117,9 +120,12 @@ accounts:
 
 mounts:
   - point: /mnt/rooffs
-    device: /dev/dax0.0
+    devices:            # in device order; the first is the primary
+      - /dev/dax0.0
   - point: /mnt/rooffs2
-    device: /dev/dax1.0
+    devices:
+      - /dev/dax1.0
+      - /dev/dax1.1
 
 identity:
   backend: local          # or spire

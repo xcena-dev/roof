@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -28,6 +29,7 @@
 #include "config/internal/mount_table.hpp"
 #include "name.hpp"
 #include "tools_uapi.h"
+#include "uapi.h"
 #include "util/file_text.hpp"
 #include "util/text.hpp"
 
@@ -153,16 +155,111 @@ SplitText_t takeListBlocks(std::string_view text)
     return split;
 }
 
-// The mounts block's rows as mounts. Each '-' opens one, and point and device are its only fields, so
-// a misspelling is refused rather than read as a mount missing one.
+std::optional<std::vector<std::string>> readFlowList(std::string_view text)
+{
+    if (text.size() < 2 || text.front() != '[' || text.back() != ']')
+    {
+        return std::nullopt;
+    }
+    std::vector<std::string> items;
+    for (const auto item : util::splitFields(text.substr(1, text.size() - 2), ","))
+    {
+        items.emplace_back(util::dropQuotes(util::trimSpace(item)));
+    }
+    return items;
+}
+
+std::runtime_error makeMountsRefusal(const std::string& path, std::string_view why)
+{
+    return std::runtime_error{std::string{path}.append(": mounts: ").append(why)};
+}
+
+// Two entries share a device only as one filesystem mounted twice, so with the same ordered list.
+void checkMounts(const std::vector<Mount_t>& mounts, const std::string& path)
+{
+    const auto refuse = [&path](std::string_view why)
+    {
+        return makeMountsRefusal(path, why);
+    };
+    std::unordered_set<std::string> points;
+    std::unordered_map<std::string, const Mount_t*> holders;
+    for (const auto& mount : mounts)
+    {
+        if (mount.point.empty() || mount.devices.empty())
+        {
+            throw refuse("every mount names a point and at least one device");
+        }
+        if (!points.insert(mount.point).second)
+        {
+            throw refuse(mount.point + " is listed twice");
+        }
+        if (mount.devices.size() > FS_MAX_DEVICES)
+        {
+            throw refuse(std::string{mount.point}
+                             .append(" lists more than ")
+                             .append(std::to_string(FS_MAX_DEVICES))
+                             .append(" devices"));
+        }
+        std::unordered_set<std::string> own;
+        for (const auto& device : mount.devices)
+        {
+            if (device.empty())
+            {
+                throw refuse(mount.point + " lists an empty device");
+            }
+            if (!own.insert(device).second)
+            {
+                throw refuse(std::string{mount.point}.append(" lists ").append(device).append(" twice"));
+            }
+            const auto [holder, fresh] = holders.try_emplace(device, &mount);
+            if (!fresh && holder->second->devices != mount.devices)
+            {
+                throw refuse(std::string{device}
+                                 .append(" is shared by ")
+                                 .append(holder->second->point)
+                                 .append(" and ")
+                                 .append(mount.point)
+                                 .append(", which do not list the same devices in the same order"));
+            }
+        }
+    }
+}
+
+// Sets one field of @mount, and says whether it opened a block list of devices.
+bool setMountField(Mount_t& mount, std::string_view key, std::string_view text, const std::string& path)
+{
+    if (key == "point")
+    {
+        mount.point = std::string{util::dropQuotes(text)};
+        return false;
+    }
+    if (key != "devices")
+    {
+        throw makeMountsRefusal(path, std::string{"a mount has no field '"}.append(key).append("'"));
+    }
+    if (auto flow = readFlowList(text))
+    {
+        mount.devices = std::move(*flow);
+        return false;
+    }
+    if (!text.empty())
+    {
+        throw makeMountsRefusal(path, "devices is a list of device paths");
+    }
+    return true;
+}
+
+// A misspelled field is refused rather than read as a mount missing one.
 std::vector<Mount_t> parseMounts(const std::vector<std::string_view>& rows, const std::string& path)
 {
     const auto refuse = [&path](std::string_view why)
     {
-        return std::runtime_error{std::string{path}.append(": mounts: ").append(why)};
+        return makeMountsRefusal(path, why);
     };
 
     std::vector<Mount_t> mounts;
+    std::uint64_t mountIndent = 0;
+    bool inDevices = false;
     for (auto row : rows)
     {
         if (const std::uint64_t hash = row.find(" #"); hash != std::string_view::npos)
@@ -174,9 +271,17 @@ std::vector<Mount_t> parseMounts(const std::vector<std::string_view>& rows, cons
         {
             continue;
         }
+        const std::uint64_t indent = row.find_first_not_of(" \t");
+        if (field.front() == '-' && inDevices && indent > mountIndent)
+        {
+            mounts.back().devices.emplace_back(util::dropQuotes(util::trimSpace(field.substr(1))));
+            continue;
+        }
         if (field.front() == '-')
         {
             mounts.emplace_back();
+            mountIndent = indent;
+            inDevices = false;
             field = util::trimSpace(field.substr(1));
             if (field.empty())
             {
@@ -188,34 +293,11 @@ std::vector<Mount_t> parseMounts(const std::vector<std::string_view>& rows, cons
         {
             throw refuse(std::string{"no mount item holds '"}.append(field).append("'"));
         }
-        const auto key = util::trimSpace(field.substr(0, colon));
-        std::string value{util::dropQuotes(util::trimSpace(field.substr(colon + 1)))};
-        if (key == "point")
-        {
-            mounts.back().point = std::move(value);
-        }
-        else if (key == "device")
-        {
-            mounts.back().device = std::move(value);
-        }
-        else
-        {
-            throw refuse(std::string{"a mount has no field '"}.append(key).append("'"));
-        }
+        inDevices = setMountField(mounts.back(), util::trimSpace(field.substr(0, colon)),
+                                  util::trimSpace(field.substr(colon + 1)), path);
     }
 
-    std::unordered_set<std::string> seen;
-    for (const auto& mount : mounts)
-    {
-        if (mount.point.empty() || mount.device.empty())
-        {
-            throw refuse("every mount names a point and a device");
-        }
-        if (!seen.insert(mount.point).second)
-        {
-            throw refuse(mount.point + " is listed twice");
-        }
-    }
+    checkMounts(mounts, path);
     return mounts;
 }
 
@@ -334,7 +416,12 @@ std::optional<std::vector<std::string>> Config::findSetting(std::string_view key
         lines.reserve(mounts_.size());
         for (const auto& mount : mounts_)
         {
-            lines.push_back(mount.point + " " + mount.device);
+            std::string line = mount.point;
+            for (const auto& device : mount.devices)
+            {
+                line.append(" ").append(device);
+            }
+            lines.push_back(std::move(line));
         }
         return lines;
     }

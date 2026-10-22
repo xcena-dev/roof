@@ -32,7 +32,7 @@ the daemon through its own installer, the mount units, and the mounts started.
 |---|---|
 | `--account NAME` | the account every application runs as (default: the sudo caller) |
 | `--device PATH` | the DAX device a mount without one of its own sits on |
-| `--mount PATH[=DEV]` | a mount point, on `DEV` or on `--device`; repeat for more (default: one under `/mnt`, named after the filesystem) |
+| `--mount PATH[=DEV[,DEV...]]` | a mount point, on its devices in device order (the first is the primary) or on `--device`; repeat for more (default: one under `/mnt`, named after the filesystem) |
 | `--no-start` | write everything but leave the mounts down |
 | `--reset-cfg` | replace the config and the policy with this tree's examples |
 | `--skip-build` | install what is already built, building only a part that is not there |
@@ -49,6 +49,10 @@ Once the config is there,
 it is the one source: 
 the accounts and the mounts come from it, 
 and an edit to it is what changes them.
+
+A mount on several devices gets one `daxdev=` option per device in its unit, in the order given.
+That order is the device order the filesystem was formatted with, and every node lists it the same way.
+A device shared by several mounts is handled once.
 
 Each device is unbound from `device_dax` first, 
 since the module maps it itself, 

@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cstdint>
 #include <exception>
 #include <optional>
 #include <string>
@@ -22,6 +23,7 @@
 #include "harness/temp_file.hpp"
 #include "name.hpp"
 #include "tools_uapi.h"
+#include "uapi.h"
 
 namespace
 {
@@ -130,9 +132,11 @@ std::string makeBlockedConfig()
            "  daemon: someone\n"
            "mounts:\n"
            "  - point: /mnt/one\n"
-           "    device: /dev/dax0.0\n"
+           "    devices:\n"
+           "      - /dev/dax0.0\n"
            "  - point: /mnt/two   # a second device\n"
-           "    device: /dev/dax1.0\n"
+           "    devices:\n"
+           "      - /dev/dax1.0\n"
            "rules:\n"
            "  - match:\n"
            "      uid: 1004\n"
@@ -154,14 +158,87 @@ void checkListBlocks(fsdaemon::probe::Context& ctx)
               "and so does one before them");
 }
 
+// One block-list mount item.
+std::string makeMountItem(std::string_view point, const std::vector<std::string>& devices)
+{
+    std::string text = std::string{"  - point: "}.append(point).append("\n    devices:\n");
+    for (const auto& device : devices)
+    {
+        text.append("      - ").append(device).append("\n");
+    }
+    return text;
+}
+
+std::string makeDeviceBlock(const std::vector<std::string>& devices)
+{
+    return "mounts:\n" + makeMountItem("/mnt/one", devices);
+}
+
 void refuseBadMounts(fsdaemon::probe::Context& ctx)
 {
     ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n"), "a mount without a device is refused");
-    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    devise: /dev/dax0.0\n"),
+    ctx.check(refusesToLoad(makeDeviceBlock({})), "an empty device list is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    devices: []\n"), "an empty flow list is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    devices: /dev/dax0.0\n"),
+              "a device that is not a list is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    device: /dev/dax0.0\n"),
+              "the single device key is refused");
+    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    devises:\n      - /dev/dax0.0\n"),
               "a misspelled mount field is refused");
-    ctx.check(refusesToLoad("mounts:\n  - point: /mnt/one\n    device: /dev/dax0.0\n"
-                            "  - point: /mnt/one\n    device: /dev/dax1.0\n"),
+    ctx.check(refusesToLoad(makeDeviceBlock({"/dev/dax0.0"}) + makeMountItem("/mnt/one", {"/dev/dax1.0"})),
               "a point listed twice is refused");
+    ctx.check(refusesToLoad(makeDeviceBlock({"/dev/dax0.0", "/dev/dax0.1", "/dev/dax0.0"})),
+              "a device listed twice in one mount is refused");
+    ctx.check(refusesToLoad(makeDeviceBlock({"/dev/dax0.0", ""})), "an empty device path is refused");
+}
+
+void checkDeviceCount(fsdaemon::probe::Context& ctx)
+{
+    constexpr std::uint32_t KernelLimit = FS_MAX_DEVICES;
+    const auto deviceName = [](std::uint32_t index)
+    {
+        return std::string{"/dev/dax0."}.append(std::to_string(index));
+    };
+    std::vector<std::string> devices;
+    for (std::uint32_t index = 0; index < KernelLimit; index++)
+    {
+        devices.push_back(deviceName(index));
+    }
+    ctx.check(!refusesToLoad(makeDeviceBlock(devices)), "as many devices as the kernel takes on one mount are accepted");
+    devices.push_back(deviceName(KernelLimit));
+    ctx.check(refusesToLoad(makeDeviceBlock(devices)), "one device more than that is refused");
+}
+
+void checkMultiDeviceMounts(fsdaemon::probe::Context& ctx)
+{
+    const TempFile block{makeDeviceBlock({"/dev/dax0.1", "/dev/dax0.2"}), "daemon-config"};
+    const std::vector<std::string> expected{"/mnt/one /dev/dax0.1 /dev/dax0.2"};
+    ctx.check(Config::load(block.getPath()).findSetting("mounts") == expected,
+              "two devices print in order after the point on one line");
+
+    const TempFile flow{"mounts:\n  - point: /mnt/one\n    devices: [/dev/dax0.2, \"/dev/dax0.1\"]\n", "daemon-config"};
+    ctx.check(Config::load(flow.getPath()).findSetting("mounts") ==
+                  std::vector<std::string>{"/mnt/one /dev/dax0.2 /dev/dax0.1"},
+              "a flow list keeps its order and drops quotes");
+
+    const TempFile same{makeDeviceBlock({"/dev/dax0.1", "/dev/dax0.2"}) +
+                            makeMountItem("/mnt/two", {"/dev/dax0.1", "/dev/dax0.2"}),
+                        "daemon-config"};
+    ctx.check(!refusesToLoadFile(same.getPath()), "two mounts of the same devices in the same order are accepted");
+
+    const TempFile reordered{makeDeviceBlock({"/dev/dax0.1", "/dev/dax0.2"}) +
+                                 makeMountItem("/mnt/two", {"/dev/dax0.2", "/dev/dax0.1"}),
+                             "daemon-config"};
+    ctx.check(refusesToLoadFile(reordered.getPath()), "the same devices in another order are refused");
+
+    const TempFile subset{makeDeviceBlock({"/dev/dax0.1", "/dev/dax0.2"}) +
+                              makeMountItem("/mnt/two", {"/dev/dax0.1"}),
+                          "daemon-config"};
+    ctx.check(refusesToLoadFile(subset.getPath()), "a mount sharing only some of the devices is refused");
+
+    const TempFile apart{makeDeviceBlock({"/dev/dax0.1"}) + makeMountItem("/mnt/two", {"/dev/dax1.0"}),
+                         "daemon-config"};
+    ctx.check(!refusesToLoadFile(apart.getPath()), "mounts on different devices are accepted");
 }
 
 // One mount whose point and device are written between @quote marks, or bare when @quote is empty.
@@ -171,7 +248,7 @@ std::string makeQuotedMountConfig(std::string_view quote)
         .append(quote)
         .append("/mnt/rooffs")
         .append(quote)
-        .append("\n    device: ")
+        .append("\n    devices:\n      - ")
         .append(quote)
         .append("/dev/dax0.0")
         .append(quote)
@@ -214,7 +291,7 @@ void checkFindSetting(fsdaemon::probe::Context& ctx)
 
     const auto mounts = config.findSetting("mounts");
     ctx.check(mounts && mounts->size() == 2 && (*mounts)[0] == "/mnt/one /dev/dax0.0",
-              "a mount prints as its point and its device on one line");
+              "a mount prints as its point and its devices on one line");
     const auto account = config.findSetting("accounts.daemon");
     ctx.check(account && account->size() == 1 && account->front() == "someone", "a scalar prints as one line");
     const auto port = config.findSetting("spire.server_port");
@@ -353,6 +430,8 @@ int main()
             checkTraceSwitch(ctx);
             checkListBlocks(ctx);
             refuseBadMounts(ctx);
+            checkDeviceCount(ctx);
+            checkMultiDeviceMounts(ctx);
             checkQuotedMounts(ctx);
             refuseUntrustedFile(ctx);
             checkFindSetting(ctx);

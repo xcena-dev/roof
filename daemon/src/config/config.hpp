@@ -26,11 +26,12 @@ namespace fsdaemon::config
 // The URI of the lock region the mount at @mountPoint carries.
 [[nodiscard]] std::string makeRegionUri(std::string_view mountPoint);
 
-// One mount the host carries: where it is mounted, and the DAX device it lays out on.
+// One mount the host carries: where it is mounted, and the DAX devices it lays out on. The order
+// is the device order, and the first device is the primary.
 struct Mount_t
 {
     std::string point;
-    std::string device;
+    std::vector<std::string> devices;
 };
 
 class Config
@@ -47,7 +48,7 @@ public:
                                          std::optional<std::uint32_t> nodeIdOverride = std::nullopt);
 
     // @key as the lines a deploy script reads, one value to a line, or nullopt for a key it never
-    // asks for. A mount is one line, its point and its device.
+    // asks for. A mount is one line: its point, then its devices.
     [[nodiscard]] std::optional<std::vector<std::string>> findSetting(std::string_view key) const;
 
     // Throws unless this euid, the config file's owner and accounts.daemon name one account. The

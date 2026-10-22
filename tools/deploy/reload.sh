@@ -29,7 +29,7 @@ DAEMON_UNIT_TEMPLATE=${DAEMON_NAME}@.service
 MOUNTS=()
 while read -r point; do MOUNTS+=("$point"); done < <(mounted_points)
 if [ ${#MOUNTS[@]} -eq 0 ]; then
-	while read -r point device; do MOUNTS+=("$point"); done < <(readSetting mounts)
+	while read -r point _; do MOUNTS+=("$point"); done < <(readSetting mounts)
 fi
 
 MODULE_SYSFS=/sys/module/${FS_NAME}

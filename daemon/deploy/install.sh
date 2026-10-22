@@ -46,7 +46,7 @@ daemon_devices() {
 }
 
 # What a config planted here starts with. The rule admits the account this ran for, and the mounts
-# are what the host installer was given, one "point device" pair to a line.
+# are what the host installer was given.
 APP_USER="${APP_USER:-${SUDO_USER:-$(id -un)}}"
 APP_UID="${APP_UID:-$(id -u "$APP_USER")}"
 DEPLOY_MOUNTS="${DEPLOY_MOUNTS:-/mnt/${FS_NAME} /dev/dax0.0}"
@@ -266,12 +266,14 @@ fi
 
 # ─── 5. config, account, policy ───────────────────────────────────────────
 step "config: ${CONFIG_FILE}"
-# The example's mounts block, one entry per "point device" line.
 render_mounts() {
-  local point device
-  while read -r point device; do
+  local point devices device
+  while read -r point devices; do
     [[ -n "$point" ]] || continue
-    printf '  - point: %s\n    device: %s\n' "$point" "$device"
+    printf '  - point: %s\n    devices:\n' "$point"
+    for device in $devices; do
+      printf '      - %s\n' "$device"
+    done
   done <<< "$DEPLOY_MOUNTS"
 }
 
