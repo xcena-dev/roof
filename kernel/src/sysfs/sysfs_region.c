@@ -99,8 +99,15 @@ static ssize_t pool_info_show(struct kobject *kobj, struct kobj_attribute *attr,
 		len += sysfs_emit_at(buf, len, "granule %llu\n", sbi->granule);
 		len += sysfs_emit_at(buf, len, "uncached %llu %llu %llu\n", sbi->uc_start,
 				     usage.uc_total, usage.uc_total - usage.uc_used);
-		len += sysfs_emit_at(buf, len, "writeback %llu %llu %llu\n", sbi->wb_start,
+		len += sysfs_emit_at(buf, len, "writeback %llu %llu %llu\n",
+				     layout_get_primary_wb_start(sbi),
 				     usage.wb_total, usage.wb_total - usage.wb_used);
+		for (u32 device = 0; device < sbi->device_count; device++) {
+			const struct fs_device *dev = &sbi->devices[device];
+			const u64 total = dev->size - dev->wb_start;
+			len += sysfs_emit_at(buf, len, "device %u %llu %llu %llu\n", device, dev->wb_start,
+					     total, total - usage.device_wb_used[device]);
+		}
 	}
 
 	mutex_unlock(&sysfs_lock);
@@ -184,8 +191,8 @@ static const struct attribute_group rat_slot_attr_group = {
 };
 
 /*
- * /sys/fs/<fs>/extents/<slot>: one "<offset>\t<length>" line per piece, in file order, since rat/
- * shows a paged region only by its first piece and its total. A slot with no region shows nothing.
+ * /sys/fs/<fs>/extents/<slot>: every piece of the slot's region, since rat/ shows a paged region
+ * only by its first piece and its total.
  */
 static struct kobj_attribute extent_slot_attrs[LAYOUT_MAX_RAT_ENTRIES];
 static struct attribute *extent_slot_attr_ptrs[LAYOUT_MAX_RAT_ENTRIES + 1];
@@ -207,7 +214,8 @@ static ssize_t extent_slot_show(struct kobject *kobj, struct kobj_attribute *att
 		const s32 count =
 			layout_rat_state_is_standing(hot.local.state) ? region_read_extents(sbi, slot, &hot, extents) : 0;
 		for (s32 piece = 0; piece < count; piece++)
-			len += sysfs_emit_at(buf, len, "0x%llx\t%llu\n", extents[piece].offset, extents[piece].length);
+			len += sysfs_emit_at(buf, len, "0x%llx\t%llu\t%u\n", extents[piece].offset,
+					     extents[piece].length, extents[piece].device_id);
 	}
 	mutex_unlock(&sysfs_lock);
 	return len;

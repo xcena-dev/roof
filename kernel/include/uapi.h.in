@@ -21,6 +21,7 @@
 
 enum @FS_PREFIX@_constants {
 	@FS_PREFIX_UPPER@_MAX_NODE_ID = 8,
+	@FS_PREFIX_UPPER@_MAX_DEVICES = 7, /* daxdev= options one mount takes */
 	@FS_PREFIX_UPPER@_NAME_MAX = 63,
 	@FS_PREFIX_UPPER@_DELEG_MAX = 28, /* Max delegation entries per region */
 	@FS_PREFIX_UPPER@_LABEL_LEN = 16, /* a role grant's group or role, NUL-padded */
@@ -112,7 +113,7 @@ struct @FS_PREFIX@_region_attr_req {
 	__u32 cache; /* enum @FS_PREFIX@_cache_policy */
 	__u32 placement; /* enum @FS_PREFIX@_placement */
 	__u32 pieces; /* GET only: the placed region's pieces */
-	__u32 reserved;
+	__u32 device; /* 0 = any device, k = device index k - 1 */
 };
 #ifdef __cplusplus
 static_assert(sizeof(struct @FS_PREFIX@_region_attr_req) == 16,
@@ -130,8 +131,7 @@ _Static_assert(sizeof(struct @FS_PREFIX@_region_attr_req) == 16,
 #define @FS_PREFIX_UPPER@_IOC_PERM_REVOKE _IOW('X', 12, struct @FS_PREFIX@_perm_req)
 #define @FS_PREFIX_UPPER@_IOC_PERM_ASK _IOW('X', 15, struct @FS_PREFIX@_perm_req)
 
-/* Region attributes, fixed once the region is placed: SET then answers -EBUSY. PAGED together with
- * UNCACHED answers -EINVAL. */
+/* Region attributes, fixed once the region is placed. */
 #define @FS_PREFIX_UPPER@_IOC_REGION_ATTR_SET _IOW('X', 13, struct @FS_PREFIX@_region_attr_req)
 #define @FS_PREFIX_UPPER@_IOC_REGION_ATTR_GET _IOR('X', 14, struct @FS_PREFIX@_region_attr_req)
 

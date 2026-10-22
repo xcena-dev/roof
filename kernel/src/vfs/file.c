@@ -365,7 +365,7 @@ static u64 file_copy_to_iter(const char *src, u64 count, struct iov_iter *to)
 	return copied;
 }
 
-/* The device offset of file byte @pos and the bytes left in its piece, or a zero offset past the end. */
+/* The device offset of file byte @pos and the bytes left in its piece, or a zero length past the end. */
 static struct region_extent file_find_extent(const struct fs_inode_info *xi, u64 pos)
 {
 	for (u32 idx = 0; idx < xi->extent_count; idx++) {
@@ -437,7 +437,7 @@ static ssize_t file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	while (total < count) {
 		const struct region_extent run = file_find_extent(ctx.xi, (u64)pos + total);
 		const u64 chunk = min_t(u64, count - total, run.length);
-		if (unlikely(run.offset == 0 || !layout_is_valid_range(ctx.sbi, run.offset, chunk))) {
+		if (unlikely(run.length == 0 || !layout_is_valid_range(ctx.sbi, run.device_id, run.offset, chunk))) {
 			pr_err("read range invalid first=0x%llx pos=%lld count=%llu\n", ctx.xi->extents[0].offset,
 			       pos + (loff_t)total, count - total);
 			return total ? (ssize_t)total : -EIO;
@@ -445,7 +445,9 @@ static ssize_t file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 		/* The one range this filesystem reads through a write-back mapping, so a peer's write
 		 * can sit behind this node's own cached copy of the line. */
-		void *data_ptr = layout_get_file_data_ptr(ctx.sbi, run.offset);
+		void *data_ptr = layout_get_file_data_ptr(ctx.sbi, run.device_id, run.offset);
+		if (unlikely(!data_ptr))
+			return total ? (ssize_t)total : -EIO;
 		CXL_RMB_CACHED(data_ptr, chunk);
 
 		const u64 copied = file_copy_to_iter(data_ptr, chunk, to);
@@ -544,7 +546,7 @@ static vm_fault_t file_data_fault(struct vm_fault *vmf)
 
 	/* The uncached half has no struct pages, and mmap gives what lives there a populated
 	 * VM_PFNMAP instead, so no fault on such a region should reach here. */
-	if (layout_check_meta_offset(ctx.sbi, ctx.xi->extents[0].offset))
+	if (layout_check_uncached_piece(ctx.sbi, ctx.xi->extents[0].device_id, ctx.xi->extents[0].offset))
 		return VM_FAULT_SIGBUS;
 
 	u64 offset = ((u64)vma->vm_pgoff << PAGE_SHIFT) + (vmf->address - vma->vm_start);
@@ -554,10 +556,14 @@ static vm_fault_t file_data_fault(struct vm_fault *vmf)
 		return VM_FAULT_SIGBUS;
 
 	const struct region_extent run = file_find_extent(ctx.xi, offset);
-	if (run.offset == 0 || run.length < PAGE_SIZE)
+	if (run.length < PAGE_SIZE)
 		return VM_FAULT_SIGBUS;
 
-	u64 pfn = (ctx.sbi->phys_base + run.offset) >> PAGE_SHIFT;
+	const struct fs_device *dev = layout_get_device(ctx.sbi, run.device_id);
+	if (!dev)
+		return VM_FAULT_SIGBUS;
+
+	u64 pfn = (dev->phys_base + run.offset) >> PAGE_SHIFT;
 	if (!pfn_valid(pfn))
 		return VM_FAULT_SIGBUS;
 
@@ -610,7 +616,7 @@ static vm_fault_t file_huge_fault(struct vm_fault *vmf, unsigned int order)
 	struct inode_ctx ctx;
 	if (!inode_open_ctx(&ctx, file_inode(own)) ||
 	    ctx.xi->extent_count == 0 ||
-	    layout_check_meta_offset(ctx.sbi, ctx.xi->extents[0].offset))
+	    layout_check_uncached_piece(ctx.sbi, ctx.xi->extents[0].device_id, ctx.xi->extents[0].offset))
 		return VM_FAULT_FALLBACK;
 
 	const u64 entry_bytes = PAGE_SIZE << order;
@@ -625,10 +631,11 @@ static vm_fault_t file_huge_fault(struct vm_fault *vmf, unsigned int order)
 
 	/* Inside one piece, since two pieces need not sit next to each other. */
 	const struct region_extent run = file_find_extent(ctx.xi, offset);
-	if (run.offset == 0 || run.length < entry_bytes || !layout_is_valid_range(ctx.sbi, run.offset, entry_bytes))
+	if (run.length < entry_bytes ||
+	    !layout_is_valid_range(ctx.sbi, run.device_id, run.offset, entry_bytes))
 		return VM_FAULT_FALLBACK;
 
-	const u64 phys = ctx.sbi->phys_base + run.offset;
+	const u64 phys = layout_get_device(ctx.sbi, run.device_id)->phys_base + run.offset;
 	if (!IS_ALIGNED(phys, entry_bytes))
 		return VM_FAULT_FALLBACK;
 
@@ -649,13 +656,17 @@ static unsigned long file_get_unmapped_area(struct file *file, unsigned long add
 	if (addr || (flags & MAP_FIXED) ||
 	    !inode_open_ctx(&ctx, file_inode(file)) ||
 	    ctx.xi->extent_count == 0 ||
-	    layout_check_meta_offset(ctx.sbi, ctx.xi->extents[0].offset))
+	    layout_check_uncached_piece(ctx.sbi, ctx.xi->extents[0].device_id, ctx.xi->extents[0].offset))
 		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
 
 	const struct region_extent run = file_find_extent(ctx.xi, (u64)pgoff << PAGE_SHIFT);
-	const u64 map_phys = ctx.sbi->phys_base + run.offset;
+	const struct fs_device *dev = layout_get_device(ctx.sbi, run.device_id);
+	if (run.length == 0 || !dev)
+		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
+
+	const u64 map_phys = dev->phys_base + run.offset;
 	const u64 map_pfn = map_phys >> PAGE_SHIFT;
-	if (run.offset == 0 || !pfn_valid(map_pfn))
+	if (!pfn_valid(map_pfn))
 		return compat_get_unmapped_area(file, addr, len, pgoff, flags);
 
 	const u32 order = folio_order(page_folio(pfn_to_page(map_pfn)));
@@ -750,13 +761,15 @@ static int file_mmap(struct file *file, struct vm_area_struct *vma)
 	if (user_offset > size || map_size > size - user_offset)
 		return -EINVAL;
 
-	if (layout_check_meta_offset(sbi, xi->extents[0].offset)) {
+	if (layout_check_uncached_piece(sbi, xi->extents[0].device_id, xi->extents[0].offset)) {
 		/* One remap covers the vma, which holds only for a region in one piece. */
 		if (unlikely(xi->extent_count != 1 ||
-			     !layout_is_valid_region_addr(sbi, xi->extents[0].offset, user_offset + map_size)))
+			     !layout_is_valid_region_addr(sbi, xi->extents[0].device_id, xi->extents[0].offset,
+							  user_offset + map_size)))
 			return -EIO;
 
-		phys_addr_t phys = sbi->phys_base + xi->extents[0].offset + user_offset;
+		phys_addr_t phys = layout_get_device(sbi, xi->extents[0].device_id)->phys_base +
+				   xi->extents[0].offset + user_offset;
 
 		vm_flags_set(vma, VM_PFNMAP | FILE_VMA_HARDEN_FLAGS);
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -961,20 +974,23 @@ static s32 file_ioctl_perm_ask(struct fs_sb_info *sbi, struct fs_inode_info *xi,
 }
 
 /* Refused once placed, because a region's pool and pieces are the bytes it sits on. */
-static s32 file_ioctl_region_attr_set(struct fs_inode_info *xi, const struct fs_region_attr_req *req)
+static s32 file_ioctl_region_attr_set(const struct fs_sb_info *sbi, struct fs_inode_info *xi,
+				      const struct fs_region_attr_req *req)
 {
 	/* Uncached with paged too: the uncached pool takes one piece only, since mmap maps a region there
 	 * with one remap. */
 	if ((req->cache != FS_CACHE_WRITEBACK && req->cache != FS_CACHE_UNCACHED) ||
 	    (req->placement != FS_PLACEMENT_CONTIGUOUS && req->placement != FS_PLACEMENT_PAGED) ||
-	    req->pieces != 0 || req->reserved != 0 ||
-	    (req->cache == FS_CACHE_UNCACHED && req->placement == FS_PLACEMENT_PAGED))
+	    req->pieces != 0 || req->device > sbi->device_count ||
+	    (req->cache == FS_CACHE_UNCACHED && req->placement == FS_PLACEMENT_PAGED) ||
+	    (req->cache == FS_CACHE_UNCACHED && req->device > FS_PRIMARY_DEVICE + 1))
 		return -EINVAL;
 	if (xi->extent_count != 0)
 		return -EBUSY;
 
 	xi->want_uncached = req->cache == FS_CACHE_UNCACHED;
 	xi->want_paged = req->placement == FS_PLACEMENT_PAGED;
+	xi->want_device = req->device == 0 ? REGION_DEVICE_ANY : req->device - 1;
 	return 0;
 }
 
@@ -986,6 +1002,7 @@ static s32 file_ioctl_region_attr_get(struct fs_sb_info *sbi, const struct fs_in
 	if (xi->extent_count == 0) {
 		req->cache = xi->want_uncached ? FS_CACHE_UNCACHED : FS_CACHE_WRITEBACK;
 		req->placement = xi->want_paged ? FS_PLACEMENT_PAGED : FS_PLACEMENT_CONTIGUOUS;
+		req->device = xi->want_device == REGION_DEVICE_ANY ? 0 : xi->want_device + 1;
 		return 0;
 	}
 
@@ -994,9 +1011,12 @@ static s32 file_ioctl_region_attr_get(struct fs_sb_info *sbi, const struct fs_in
 		return -EIO;
 	union layout_rat_hot_copy hot;
 	cxl_get_layout_rat_hot(&hot, &entry->hot);
-	req->cache = layout_check_meta_offset(sbi, xi->extents[0].offset) ? FS_CACHE_UNCACHED : FS_CACHE_WRITEBACK;
+	req->cache = layout_check_uncached_piece(sbi, xi->extents[0].device_id, xi->extents[0].offset) ?
+			     FS_CACHE_UNCACHED :
+			     FS_CACHE_WRITEBACK;
 	req->placement = hot.local.placement == LAYOUT_PLACEMENT_PAGED ? FS_PLACEMENT_PAGED : FS_PLACEMENT_CONTIGUOUS;
 	req->pieces = xi->extent_count;
+	req->device = xi->extents[0].device_id + 1;
 	return 0;
 }
 
@@ -1067,7 +1087,7 @@ static long file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case FS_IOC_REGION_ATTR_SET:
-		ret = file_ioctl_region_attr_set(ctx.xi, &payload.attr);
+		ret = file_ioctl_region_attr_set(ctx.sbi, ctx.xi, &payload.attr);
 		break;
 
 	case FS_IOC_REGION_ATTR_GET:

@@ -93,7 +93,8 @@ static const match_table_t super_mount_tokens = {
  * would map the pools somewhere else. */
 struct super_mount_opts {
 	s32 node_id; /* 0 = auto-mount (no node_id= given); ≥1 = manual */
-	char daxdev[128];
+	char daxdev[LAYOUT_MAX_DEVICES][128]; /* one per daxdev=, in the order given */
+	u32 daxdev_count;
 	bool format; /* in-kernel format on mount */
 	u32 granule_shift; /* 0 = the default */
 	u32 uc_mib; /* uncached pool in MiB, 0 = the default */
@@ -106,7 +107,7 @@ struct super_mount_opts {
 static s32 super_parse_options(char *options, struct super_mount_opts *opts)
 {
 	opts->node_id = 0;
-	opts->daxdev[0] = '\0';
+	opts->daxdev_count = 0;
 	opts->format = false;
 	opts->granule_shift = 0;
 	opts->uc_mib = 0;
@@ -138,7 +139,12 @@ static s32 super_parse_options(char *options, struct super_mount_opts *opts)
 			break;
 		}
 		case OPTION_DAXDEV:
-			match_strlcpy(opts->daxdev, &args[0], sizeof(opts->daxdev));
+			if (opts->daxdev_count >= LAYOUT_MAX_DEVICES) {
+				pr_err("at most %u daxdev= options are accepted\n", (u32)LAYOUT_MAX_DEVICES);
+				return -EINVAL;
+			}
+			match_strlcpy(opts->daxdev[opts->daxdev_count], &args[0], sizeof(opts->daxdev[0]));
+			opts->daxdev_count++;
 			break;
 		case OPTION_FORMAT:
 			opts->format = true;
@@ -274,9 +280,9 @@ static s32 super_show_options(struct seq_file *m, struct dentry *root)
 
 	seq_printf(m, ",node_id=%u", sbi->node_id);
 
-	if (sbi->daxdev_path[0])
-		seq_printf(m, ",daxdev=%s", sbi->daxdev_path);
-	else if (sbi->meta_base != NULL)
+	for (u32 idx = 0; idx < sbi->daxdev_count; idx++)
+		seq_printf(m, ",daxdev=%s", sbi->daxdev_paths[idx]);
+	if (!sbi->daxdev_count && sbi->meta_base != NULL)
 		seq_puts(m, ",dax");
 
 	return 0;
@@ -302,6 +308,51 @@ static const struct dentry_operations super_dentry_ops = {
 /* ============================================================================
  * Read and validate Global Superblock
  * ============================================================================ */
+
+/* The device list against the devices this mount mapped, which the mount ordered by that list. */
+static s32 super_check_devices(struct fs_sb_info *sbi, u64 total_size)
+{
+	struct layout_superblock *gsb = layout_get_superblock(sbi);
+	union layout_superblock_devices_copy list;
+	layout_get_superblock_devices(&list, &gsb->devices);
+
+	const u32 computed = layout_compute_devices_checksum(&list);
+	if (list.local.checksum != computed) {
+		pr_err("device list checksum mismatch (stored=0x%x, computed=0x%x)\n", list.local.checksum, computed);
+		return -ENODEV;
+	}
+
+	if (list.local.device_count != sbi->device_count) {
+		pr_err("the superblock lists %u device(s) and the mount gave %u daxdev=\n",
+		       list.local.device_count, sbi->device_count);
+		return -ENODEV;
+	}
+
+	for (u32 idx = 0; idx < sbi->device_count; idx++) {
+		const struct fs_device *dev = &sbi->devices[idx];
+		if (dev->size != list.local.size[idx]) {
+			pr_err("device %u (%s) is %llu bytes and the superblock says %llu\n", idx,
+			       sbi->daxdev_paths[idx], dev->size, list.local.size[idx]);
+			return -ENODEV;
+		}
+		if (sbi->device_count > 1 &&
+		    (dev->serial != list.local.serial[idx] || dev->device_offset != list.local.device_offset[idx])) {
+			pr_err("device %u (%s) is serial 0x%llx offset 0x%llx and the superblock says 0x%llx and 0x%llx\n",
+			       idx, sbi->daxdev_paths[idx], dev->serial, dev->device_offset,
+			       list.local.serial[idx], list.local.device_offset[idx]);
+			return -ENODEV;
+		}
+	}
+
+	/* total_size is the primary's, so a list that disagrees was not written by one format. */
+	if (list.local.size[FS_PRIMARY_DEVICE] != total_size) {
+		pr_err("device 0 is %llu bytes in the device list and total_size is %llu\n",
+		       list.local.size[FS_PRIMARY_DEVICE], total_size);
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 static s32 super_read_superblock(struct fs_sb_info *sbi, struct super_block *sb, s32 silent)
 {
@@ -333,7 +384,11 @@ static s32 super_read_superblock(struct fs_sb_info *sbi, struct super_block *sb,
 		return -EINVAL;
 	}
 
-	sbi->total_size = head.local.total_size;
+	s32 ret = super_check_devices(sbi, head.local.total_size);
+	if (ret)
+		return ret;
+
+	sbi->devices[FS_PRIMARY_DEVICE].size = head.local.total_size;
 	sbi->num_shards = head.local.num_shards;
 	if (sbi->num_shards == 0 || !is_power_of_2(sbi->num_shards)) {
 		pr_err("num_shards %u is not a power of 2\n", sbi->num_shards);
@@ -360,22 +415,22 @@ static s32 super_read_superblock(struct fs_sb_info *sbi, struct super_block *sb,
 	sbi->uc_start = layout_align_up(LAYOUT_DATA_OFFSET, sbi->granule);
 
 	u64 boundary = sbi->uc_start + (u64)head.local.uc_granules * sbi->granule;
-	if (boundary >= sbi->total_size) {
+	if (boundary >= sbi->devices[FS_PRIMARY_DEVICE].size) {
 		pr_err("an uncached pool of %u granules leaves no write-back area\n",
 		       head.local.uc_granules);
 		return -EINVAL;
 	}
 	/* The areas were mapped from a read of this same line, so a difference means another node
 	 * reformatted the device in between and the pools sit outside what is mapped. */
-	if (boundary != sbi->wb_start) {
+	if (boundary != layout_get_primary_wb_start(sbi)) {
 		pr_err("the areas are split at 0x%llx but the superblock says 0x%llx\n",
-		       sbi->wb_start, boundary);
+		       layout_get_primary_wb_start(sbi), boundary);
 		return -EINVAL;
 	}
 
 	pr_debug("superblock validated\n");
 	pr_debug("  total_size=%llu, shards=%u, buckets/shard=%u, pool/shard=%u\n",
-		 sbi->total_size, sbi->num_shards,
+		 sbi->devices[FS_PRIMARY_DEVICE].size, sbi->num_shards,
 		 sbi->buckets_per_shard, sbi->pool_lines_per_shard);
 
 	return 0;
@@ -388,7 +443,7 @@ static s32 super_read_superblock(struct fs_sb_info *sbi, struct super_block *sb,
 static s32 super_init_shard_table(struct fs_sb_info *sbi)
 {
 	u64 shard_table_offset = sbi->shard_table_offset;
-	if (!layout_is_valid_range(sbi, shard_table_offset, (u64)sbi->num_shards * LAYOUT_SHARD_HEADER_SIZE)) {
+	if (!layout_is_valid_range(sbi, FS_PRIMARY_DEVICE, shard_table_offset, (u64)sbi->num_shards * LAYOUT_SHARD_HEADER_SIZE)) {
 		pr_err("shard_table_offset 0x%llx out of range\n", shard_table_offset);
 		return -EINVAL;
 	}
@@ -427,10 +482,10 @@ static s32 super_init_shard_table(struct fs_sb_info *sbi)
 		u64 bucket_off = copy.local.bucket_array_offset;
 		u64 pool_off = copy.local.pool_array_offset;
 
-		if (!layout_is_valid_range(sbi, bucket_off, (u64)buckets * LAYOUT_INDEX_LINK_SIZE) ||
-		    !layout_is_valid_range(sbi, pool_off, (u64)pool_lines * LAYOUT_INDEX_LINK_SIZE)) {
+		if (!layout_is_valid_range(sbi, FS_PRIMARY_DEVICE, bucket_off, (u64)buckets * LAYOUT_INDEX_LINK_SIZE) ||
+		    !layout_is_valid_range(sbi, FS_PRIMARY_DEVICE, pool_off, (u64)pool_lines * LAYOUT_INDEX_LINK_SIZE)) {
 			pr_err("shard %u: offset out of bounds (bucket=%llu pool=%llu total=%llu)\n",
-			       i, bucket_off, pool_off, sbi->total_size);
+			       i, bucket_off, pool_off, sbi->devices[FS_PRIMARY_DEVICE].size);
 			return -EINVAL;
 		}
 
@@ -455,7 +510,7 @@ static s32 super_load_rat(struct fs_sb_info *sbi)
 		return -EINVAL;
 	}
 
-	if (!layout_is_valid_range(sbi, rat_offset, sizeof(struct layout_rat))) {
+	if (!layout_is_valid_range(sbi, FS_PRIMARY_DEVICE, rat_offset, sizeof(struct layout_rat))) {
 		pr_err("rat_offset 0x%llx out of range\n", rat_offset);
 		return -EINVAL;
 	}
@@ -704,8 +759,12 @@ static void fs_init_layout_ptrs(struct fs_sb_info *sbi)
 
 static s32 super_fill_super(struct super_block *sb, void *data, s32 silent)
 {
-	struct super_mount_opts opts;
-	s32 ret = super_parse_options((char *)data, &opts);
+	/* On the heap: the device paths alone would put this frame over the stack's limit. */
+	struct super_mount_opts *opts __free(kfree) = kzalloc(sizeof(*opts), GFP_KERNEL);
+	if (!opts)
+		return -ENOMEM;
+
+	s32 ret = super_parse_options((char *)data, opts);
 	if (ret)
 		return ret;
 
@@ -722,27 +781,30 @@ static s32 super_fill_super(struct super_block *sb, void *data, s32 silent)
 	mutex_init(&sbi->drain_mutex);
 
 	/* Only an explicit node_id is checked here. Auto-mount takes its own from the claim below. */
-	if (opts.node_id != 0) {
-		if (opts.node_id > FS_MAX_NODE_ID) {
-			pr_err("node_id=%d invalid (valid range: 1..%d)\n", opts.node_id, FS_MAX_NODE_ID);
+	if (opts->node_id != 0) {
+		if (opts->node_id > FS_MAX_NODE_ID) {
+			pr_err("node_id=%d invalid (valid range: 1..%d)\n", opts->node_id, FS_MAX_NODE_ID);
 			ret = -EINVAL;
 			goto err_free_sbi;
 		}
-		sbi->node_id = opts.node_id;
+		sbi->node_id = opts->node_id;
 	}
-	if (!opts.daxdev[0]) {
+	if (!opts->daxdev_count) {
 		pr_err("must specify daxdev= mount option\n");
 		ret = -EINVAL;
 		goto err_free_sbi;
 	}
-	strscpy(sbi->daxdev_path, opts.daxdev, sizeof(sbi->daxdev_path));
-	pr_debug("fill_super DEV_DAX %s (node_id=%d)\n", opts.daxdev, opts.node_id);
+	for (u32 idx = 0; idx < opts->daxdev_count; idx++)
+		strscpy(sbi->daxdev_paths[idx], opts->daxdev[idx], sizeof(sbi->daxdev_paths[idx]));
+	sbi->daxdev_count = opts->daxdev_count;
+	pr_debug("fill_super DEV_DAX %s (%u device(s), node_id=%d)\n", opts->daxdev[0], opts->daxdev_count,
+		 opts->node_id);
 
 	/* Before the areas are mapped, because a format about to run decides where they split. */
-	sbi->format_on_mount = opts.format;
-	sbi->format_granule_shift = opts.granule_shift ? opts.granule_shift : LAYOUT_GRANULE_SHIFT_DEFAULT;
-	if (opts.uc_mib) {
-		u64 bytes = (u64)opts.uc_mib << 20;
+	sbi->format_on_mount = opts->format;
+	sbi->format_granule_shift = opts->granule_shift ? opts->granule_shift : LAYOUT_GRANULE_SHIFT_DEFAULT;
+	if (opts->uc_mib) {
+		u64 bytes = (u64)opts->uc_mib << 20;
 		u64 count = bytes >> sbi->format_granule_shift;
 		sbi->format_uc_granules = count ? (u32)count : 1;
 	} else {
@@ -751,7 +813,7 @@ static s32 super_fill_super(struct super_block *sb, void *data, s32 silent)
 
 	ret = dax_acquire_areas(sbi);
 	if (ret) {
-		pr_err("DEV_DAX acquisition failed for %s\n", opts.daxdev);
+		pr_err("DEV_DAX acquisition failed for %s\n", opts->daxdev[0]);
 		goto err_free_sbi;
 	}
 
@@ -763,16 +825,16 @@ static s32 super_fill_super(struct super_block *sb, void *data, s32 silent)
 	}
 	fs_init_layout_ptrs(sbi);
 
-	if (opts.node_id == 0)
+	if (opts->node_id == 0)
 		ret = bootstrap_auto_mount(sbi);
 	else
-		ret = bootstrap_manual_mount(sbi, (u32)opts.node_id, opts.format);
+		ret = bootstrap_manual_mount(sbi, (u32)opts->node_id, opts->format);
 	if (ret)
 		goto err_release_dax;
 
 	/* Before fill_super_common, because GC starts inside it and the row this writes is what
 	 * the region admits from then on. */
-	ret = super_bind_daemon_account(sbi, &opts);
+	ret = super_bind_daemon_account(sbi, opts);
 	if (ret)
 		goto err_bs_release;
 

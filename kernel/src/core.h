@@ -25,6 +25,7 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 
+#include "layout/superblock.h" /* LAYOUT_MAX_DEVICES */
 #include "uapi.h" /* FS_MAX_NODE_ID, one stamp watch per slot */
 
 /* Held by pointer, so the definition is the owning header's to provide. */
@@ -81,6 +82,25 @@ struct bootstrap_stamp_watch {
 };
 
 /* ============================================================================
+ * The devices one filesystem spans
+ * ============================================================================ */
+
+enum fs_device_config {
+	FS_PRIMARY_DEVICE = 0, /* holds the metadata and the uncached pool */
+};
+
+/* One device, as a piece's device_id names it. */
+struct fs_device {
+	phys_addr_t phys_base; /* where the device starts in physical memory */
+	u64 size; /* how much of it there is */
+	u64 serial; /* the CXL memdev's serial, 0 on a one-device mount */
+	u64 device_offset; /* where the device starts inside that memdev, 0 on a one-device mount */
+	void *data_base; /* the write-back mapping, which starts at device offset @wb_start */
+	u64 wb_start; /* the device offset where that mapping begins */
+	struct dax_areas *areas; /* the device's shared mappings, which the mount holds a reference on */
+};
+
+/* ============================================================================
  * In-memory superblock info
  * ============================================================================ */
 
@@ -89,20 +109,21 @@ struct fs_sb_info {
 	 * inodes from there is what lets it take a live mapping down. */
 	struct super_block *sb;
 
-	/* ── The device ───────────────────────────────────────────────────── */
-	char daxdev_path[128]; /* the DEV_DAX device this mount sits on */
-	phys_addr_t phys_base; /* where that device starts in physical memory */
-	u64 total_size; /* how much of it there is */
+	/* ── The devices this mount was given ─────────────────────────────── */
+	char daxdev_paths[LAYOUT_MAX_DEVICES][128]; /* the DEV_DAX devices, in device order once the areas are acquired */
+	u32 daxdev_count;
 
 	/* ── Its two areas ────────────────────────────────────────────────
-	 * A PAT reservation is exclusive per physical range, so one range cannot carry two cache
-	 * policies. The data area comes from memremap_pages, which gives ZONE_DEVICE pages, and
-	 * MEMORY_DEVICE_GENERIC supports the pinning a GPU DMA registration needs. Both belong to
-	 * the device, so these two are copies of what @dax_areas holds.
+	 * A PAT reservation is exclusive per physical range, so one range cannot carry two cache policies.
+	 * Write-back areas come from memremap_pages, whose ZONE_DEVICE pages a GPU DMA registration can pin.
 	 */
 	void *meta_base; /* uncached, below LAYOUT_DATA_OFFSET */
-	void *data_base; /* write-back, from LAYOUT_DATA_OFFSET on */
-	struct dax_areas *dax_areas;
+
+	/* ── The devices ──────────────────────────────────────────────────────
+	 * A piece's device_id indexes this table, and the primary device is device 0.
+	 */
+	struct fs_device devices[LAYOUT_MAX_DEVICES];
+	u32 device_count;
 
 	/* ── vm_ops wrapper (mprotect enforcement) ──────────────────────────
 	 * Seeded at the first mmap by copying the underlying ops and overriding .mprotect. Every
@@ -130,13 +151,11 @@ struct fs_sb_info {
 	u64 rat_offset;
 
 	/* ── The two region pools ─────────────────────────────────────────
-	 * A region's cache policy is where it sits: below @wb_start the device is mapped uncached
-	 * and above it write-back, and one mapping covers each side. @granule is what an offset and
-	 * a size are rounded to, and every node reads it from the superblock so they agree.
+	 * A region's cache policy follows where it sits. Only the primary below its @wb_start is uncached.
+	 * @granule rounds an offset and a size, and every node reads it from the superblock.
 	 */
 	u64 granule;
 	u64 uc_start; /* first offset a region may take, past the metadata */
-	u64 wb_start; /* where the uncached pool ends and the write-back one begins */
 
 	/* What a format on this mount is to write, off its options. Read before the areas are
 	 * mapped, since the split they take has to be the one the format then publishes. */

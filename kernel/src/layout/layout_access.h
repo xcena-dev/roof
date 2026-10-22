@@ -24,17 +24,20 @@
  * All filesystem code uses these helpers to access device memory (DEV_DAX).
  */
 
-/*
- * Which of the two mappings holds a device offset, and so which cache policy it carries. The
- * address decides it rather than the region's identity, and the boundary comes from the
- * superblock so that every node splits the device the same way.
- */
-static inline bool layout_check_meta_offset(const struct fs_sb_info *sbi, u64 offset)
+/* Where the primary's uncached mapping ends and its write-back one begins. */
+static inline u64 layout_get_primary_wb_start(const struct fs_sb_info *sbi)
 {
-	return offset < sbi->wb_start;
+	return sbi->devices[FS_PRIMARY_DEVICE].wb_start;
 }
 
-/* Pointer into the uncached area. @offset is a device offset below sbi->wb_start. */
+/* Whether a piece lies in the primary's uncached mapping. The boundary comes from the superblock, so
+ * every node splits the device the same way. */
+static inline bool layout_check_uncached_piece(const struct fs_sb_info *sbi, u32 device_id, u64 offset)
+{
+	return device_id == FS_PRIMARY_DEVICE && offset < layout_get_primary_wb_start(sbi);
+}
+
+/* Pointer into the primary's uncached area. @offset is a device offset below its write-back start. */
 static inline void *layout_get_meta_ptr(struct fs_sb_info *sbi, u64 offset)
 {
 	return (void *)((char *)sbi->meta_base + offset);
@@ -112,25 +115,41 @@ static inline struct layout_shard_header *layout_get_shard_header(struct fs_sb_i
 	return sbi->shard_cache[shard_id].header;
 }
 
-/* Caller must RMB before reading through the returned pointer. */
-static inline void *layout_get_file_data_ptr(struct fs_sb_info *sbi, u64 offset)
+/* The device a piece's device_id names, or NULL when this mount has no such device. */
+static inline struct fs_device *layout_get_device(struct fs_sb_info *sbi, u32 device_id)
 {
-	if (layout_check_meta_offset(sbi, offset))
+	if (unlikely(device_id >= sbi->device_count))
+		return NULL;
+
+	return &sbi->devices[device_id];
+}
+
+/* Caller must RMB before reading through the returned pointer. NULL when the piece lies in no mapping. */
+static inline void *layout_get_file_data_ptr(struct fs_sb_info *sbi, u32 device_id, u64 offset)
+{
+	const struct fs_device *dev = layout_get_device(sbi, device_id);
+	if (unlikely(!dev))
+		return NULL;
+
+	if (layout_check_uncached_piece(sbi, device_id, offset))
 		return layout_get_meta_ptr(sbi, offset);
+	if (unlikely(offset < dev->wb_start))
+		return NULL;
 
 	/* The write-back area is its own mapping starting where the uncached one ends, so a
 	 * device offset becomes an offset into that mapping. */
-	return (void *)((char *)sbi->data_base + (offset - sbi->wb_start));
+	return (void *)((char *)dev->data_base + (offset - dev->wb_start));
 }
 
-/* Validate that [offset, offset+size) is within DAX mapping (overflow-safe) */
-static inline bool layout_is_valid_range(struct fs_sb_info *sbi, u64 offset, u64 size)
+/* Validate that [offset, offset+size) is within the device's mapping (overflow-safe) */
+static inline bool layout_is_valid_range(struct fs_sb_info *sbi, u32 device_id, u64 offset, u64 size)
 {
-	if (unlikely(!sbi->meta_base || size == 0))
+	const struct fs_device *dev = layout_get_device(sbi, device_id);
+	if (unlikely(!dev || !sbi->meta_base || size == 0))
 		return false;
-	if (unlikely(offset >= sbi->total_size))
+	if (unlikely(offset >= dev->size))
 		return false;
-	if (unlikely(size > sbi->total_size - offset)) /* overflow-safe subtraction */
+	if (unlikely(size > dev->size - offset)) /* overflow-safe subtraction */
 		return false;
 	return true;
 }
@@ -153,11 +172,12 @@ static inline bool layout_check_rat_name(struct fs_sb_info *sbi, u32 region_id, 
 	return namelen >= FS_NAME_MAX || stored[namelen] == '\0';
 }
 
-static inline bool layout_is_valid_region_addr(struct fs_sb_info *sbi, u64 offset, u64 access_size)
+static inline bool layout_is_valid_region_addr(struct fs_sb_info *sbi, u32 device_id, u64 offset, u64 access_size)
 {
-	if (unlikely(offset == 0))
+	/* Offset 0 of the primary is its superblock. A device's data starts there. */
+	if (unlikely(device_id == FS_PRIMARY_DEVICE && offset == 0))
 		return false;
-	return layout_is_valid_range(sbi, offset, access_size);
+	return layout_is_valid_range(sbi, device_id, offset, access_size);
 }
 
 /* ============================================================================

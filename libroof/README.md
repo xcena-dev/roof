@@ -13,7 +13,7 @@ The contract the kernel holds every caller to, library or not, is in [`kernel/`]
 | `File::open(path, flags, mode)` | `open` | A descriptor with `O_CLOEXEC` added. With `O_CREAT` the region has a name and a slot, and no bytes yet. |
 | `File::resize(bytes)` | `ftruncate` | The region's physical extent, rounded up to `DaxAlignment`. It is placed once: a second `resize` on a placed file is refused. |
 | `File::map(bytes, protection)` | `mmap` | A `Mapping` that unmaps on the way out. A caller who is not the owner gets a delegation row written for it on its first map, if the daemon allows. |
-| `File::setRegionAttr(attr)` | `ioctl` | Which pool the placement takes, and so how every later mapping is cached, and whether it may lie in pieces. Accepted only while the file has no extent. |
+| `File::setRegionAttr(attr)` | `ioctl` | Which pool the placement takes, and so how every later mapping is cached, and whether it may lie in pieces, and which device it sits on (`AnyDevice`, or 1 plus its device index, the order the format recorded the devices in). Accepted only while the file has no extent. |
 | `File::readRegionAttr()` | `ioctl` | How the region landed and in how many pieces, or what `setRegionAttr` asked for while it has no extent. |
 | `File::setDefaultPermission(perms)` | `ioctl` | What the region grants to everyone without a row of their own. Needs `ADMIN`. |
 | `File::grantPermission(uid, gid, perms)` | `ioctl` | A delegation row for an account on this node. `AnyId` in one id leaves the other to decide. |

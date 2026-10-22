@@ -99,12 +99,16 @@ enum class Placement : std::uint32_t
     Paged = 1,
 };
 
+// A region's device field is 1 + its device index, and AnyDevice lets the kernel choose.
+inline constexpr std::uint32_t AnyDevice = 0;
+
 // pieces is read back only, and 0 while the region has none.
 struct RegionAttr_t
 {
     CachePolicy cache{CachePolicy::Writeback};
     Placement placement{Placement::Contiguous};
     std::uint32_t pieces{0};
+    std::uint32_t device{AnyDevice};
 };
 
 class File;

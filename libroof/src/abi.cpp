@@ -18,7 +18,7 @@
 namespace fsuser
 {
 
-// These fail when a type that crosses the table changes, which is when the ABI version goes up.
+// These fail when a type that crosses the table stops being plain data.
 static_assert(sizeof(Permission) == sizeof(std::uint32_t));
 static_assert(std::is_standard_layout_v<Permission>);
 static_assert(std::is_standard_layout_v<RegionAttr_t>);
@@ -69,6 +69,7 @@ std::int32_t setRegionAttr(std::int32_t descriptor, const RegionAttr_t& attr) no
     sent.cache = static_cast<std::uint32_t>(attr.cache);
     sent.placement = static_cast<std::uint32_t>(attr.placement);
     sent.pieces = attr.pieces;
+    sent.device = attr.device;
     return sendIoctl(descriptor, FS_IOC_REGION_ATTR_SET, &sent);
 }
 
@@ -78,8 +79,9 @@ std::int32_t readRegionAttr(std::int32_t descriptor, RegionAttr_t* attr) noexcep
     const std::int32_t result = sendIoctl(descriptor, FS_IOC_REGION_ATTR_GET, &taken);
     if (result == 0 && attr != nullptr)
     {
-        *attr = RegionAttr_t{static_cast<CachePolicy>(taken.cache), static_cast<Placement>(taken.placement),
-                             taken.pieces};
+        *attr = RegionAttr_t{static_cast<CachePolicy>(taken.cache),
+                             static_cast<Placement>(taken.placement),
+                             taken.pieces, taken.device};
     }
     return result;
 }

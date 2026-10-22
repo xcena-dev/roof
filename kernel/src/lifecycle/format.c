@@ -60,7 +60,7 @@ static void format_write_lock_entry(struct fs_sb_info *sbi)
 s32 format_device(struct fs_sb_info *sbi)
 {
 	void *base = sbi->meta_base;
-	u64 total = sbi->total_size;
+	u64 total = sbi->devices[FS_PRIMARY_DEVICE].size;
 	u32 num_shards = LAYOUT_NUM_SHARDS;
 	u32 pool_lines_per_shard = LAYOUT_POOL_LINES_PER_SHARD;
 	u32 buckets_per_shard = LAYOUT_BUCKETS_PER_SHARD;
@@ -170,6 +170,17 @@ s32 format_device(struct fs_sb_info *sbi)
 
 	/* Before the fence below, so a joiner never finds the layout without it. */
 	format_write_lock_entry(sbi);
+
+	/* Before the head, whose magic vouches for the whole superblock. */
+	union layout_superblock_devices_copy devices = {};
+	devices.local.device_count = sbi->device_count;
+	for (u32 idx = 0; idx < sbi->device_count; idx++) {
+		devices.local.serial[idx] = sbi->devices[idx].serial;
+		devices.local.device_offset[idx] = sbi->devices[idx].device_offset;
+		devices.local.size[idx] = sbi->devices[idx].size;
+	}
+	devices.local.checksum = layout_compute_devices_checksum(&devices);
+	layout_set_superblock_devices(&gsb->devices, &devices);
 
 	/* Last and whole: its magic is the fence a joiner polls, published with the geometry it
 	 * vouches for in one line write. */

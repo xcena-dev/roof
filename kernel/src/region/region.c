@@ -44,8 +44,9 @@ s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out)
 		return -EINVAL;
 
 	memset(out, 0, sizeof(*out));
-	out->uc_total = sbi->wb_start - sbi->uc_start;
-	out->wb_total = sbi->total_size - sbi->wb_start;
+	out->uc_total = layout_get_primary_wb_start(sbi) - sbi->uc_start;
+	for (u32 device = 0; device < sbi->device_count; device++)
+		out->wb_total += sbi->devices[device].size - sbi->devices[device].wb_start;
 
 	for (u32 index = 0; index < LAYOUT_MAX_RAT_ENTRIES; index++) {
 		struct layout_rat_entry *entry = layout_get_rat_entry(sbi, index);
@@ -64,14 +65,17 @@ s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out)
 		/* Every piece sits in the first one's pool. The lock region sits in neither. */
 		struct region_extent extents[LAYOUT_MAX_EXTENTS];
 		const s32 count = region_read_extents(sbi, index, &hot, extents);
-		if (count <= 0 || extents[0].offset < sbi->uc_start)
+		if (count <= 0 ||
+		    (extents[0].device_id == FS_PRIMARY_DEVICE && extents[0].offset < sbi->uc_start))
 			continue;
 
 		const u64 taken = region_sum_extents(extents, (u32)count);
-		if (extents[0].offset < sbi->wb_start)
+		if (layout_check_uncached_piece(sbi, extents[0].device_id, extents[0].offset))
 			out->uc_used += taken;
-		else
+		else {
 			out->wb_used += taken;
+			out->device_wb_used[extents[0].device_id] += taken;
+		}
 	}
 
 	return 0;
@@ -107,32 +111,34 @@ static u64 region_step_placements_odd(u64 placements)
 	return (placements & 1) ? placements + 2 : placements + 1;
 }
 
-/* The pool one placement searches. The uncached pool runs from the metadata end to where the
- * write-back pool begins, and that one runs to the device end. uc_start is the metadata end rounded
- * up to a granule, so it never sits below the head's regions_start and keeps a placement off the
- * metadata. */
-static void region_get_pool_bounds(struct fs_sb_info *sbi, bool uncached, u64 *start, u64 *end)
+/* The uncached pool runs from uc_start to the primary's write-back start, and a write-back pool from
+ * its device's boundary to the device's end. The uncached pool exists on the primary only. */
+static void region_get_pool_bounds(struct fs_sb_info *sbi, u32 device, bool uncached, u64 *start, u64 *end)
 {
-	*start = uncached ? sbi->uc_start : sbi->wb_start;
-	*end = uncached ? sbi->wb_start : sbi->total_size;
+	const struct fs_device *dev = &sbi->devices[device];
+	*start = uncached ? sbi->uc_start : dev->wb_start;
+	*end = uncached ? dev->wb_start : dev->size;
 }
 
-/* A mount maps one device, and a region's pool is judged off its first piece alone. */
+/* A region's pool is judged off its first piece alone. */
 static bool region_check_extents(struct fs_sb_info *sbi, const struct region_extent *extents, u32 count)
 {
-	const bool uncached = layout_check_meta_offset(sbi, extents[0].offset);
+	const bool uncached = layout_check_uncached_piece(sbi, extents[0].device_id, extents[0].offset);
 	for (u32 idx = 0; idx < count; idx++) {
 		const struct region_extent *extent = &extents[idx];
-		if (extent->device_id != 0)
+		if (extent->device_id >= sbi->device_count)
 			return false;
-		if (extent->offset == 0 || extent->length == 0 || !layout_is_valid_range(sbi, extent->offset, extent->length))
+		if (extent->length == 0 || !layout_is_valid_range(sbi, extent->device_id, extent->offset, extent->length))
+			return false;
+		/* On the primary the metadata is below the first pool. A device is all pool. */
+		if (extent->device_id == FS_PRIMARY_DEVICE && extent->offset < sbi->uc_start)
 			return false;
 		/* A write-back piece starts on the placing node's physical granule boundary, which a peer
 		 * may map elsewhere, so its start is held to a page only. */
 		if (!IS_ALIGNED(extent->offset, uncached ? sbi->granule : PAGE_SIZE) ||
 		    !IS_ALIGNED(extent->length, sbi->granule))
 			return false;
-		if (layout_check_meta_offset(sbi, extent->offset) != uncached)
+		if (layout_check_uncached_piece(sbi, extent->device_id, extent->offset) != uncached)
 			return false;
 	}
 	return true;
@@ -172,10 +178,11 @@ s32 region_read_extents(struct fs_sb_info *sbi, u32 rat_entry_id, const union la
 struct region_pool {
 	struct region_span *spans;
 	u32 count;
+	u32 device_id; /* the device the pool is on */
 	u64 start;
 	u64 end;
 	u64 granule;
-	/* The device's physical base for the write-back pool, where a huge entry needs a physical granule
+	/* The device's physical base for a write-back pool, where a huge entry needs a physical granule
 	 * boundary and the device need not sit on one. Zero for the uncached pool. */
 	u64 align_base;
 };
@@ -196,12 +203,14 @@ static void region_insert_span(struct region_pool *pool, u64 offset, u64 end)
 
 /* Read afresh by every placement, since another node may have placed or freed a region since this
  * node last looked. */
-static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const union layout_rat_map_copy *map,
-				struct region_pool *pool)
+static s32 region_collect_spans(struct fs_sb_info *sbi, u32 device, bool uncached,
+				const union layout_rat_map_copy *map, struct region_pool *pool)
 {
-	region_get_pool_bounds(sbi, uncached, &pool->start, &pool->end);
+	const struct fs_device *dev = &sbi->devices[device];
+	region_get_pool_bounds(sbi, device, uncached, &pool->start, &pool->end);
+	pool->device_id = device;
 	pool->granule = sbi->granule;
-	pool->align_base = uncached ? 0 : sbi->phys_base;
+	pool->align_base = uncached ? 0 : dev->phys_base;
 	pool->count = 0;
 	const u64 regions_start = pool->start;
 	const u64 regions_end = pool->end;
@@ -223,9 +232,12 @@ static s32 region_collect_spans(struct fs_sb_info *sbi, bool uncached, const uni
 		struct region_extent extents[LAYOUT_MAX_EXTENTS];
 		const s32 count = region_read_extents(sbi, idx, &hot, extents);
 		for (s32 piece = 0; piece < count; piece++) {
+			if (extents[piece].device_id != device)
+				continue;
 			const u64 piece_offset = extents[piece].offset;
 			const u64 piece_length = extents[piece].length;
-			if (piece_length > sbi->total_size || piece_offset > sbi->total_size - piece_length)
+			const u64 device_size = dev->size;
+			if (piece_length > device_size || piece_offset > device_size - piece_length)
 				continue;
 			const u64 piece_end = piece_offset + piece_length;
 
@@ -344,10 +356,10 @@ static s32 region_pick_gap(const struct region_pool *pool, u64 size, u64 *out_of
 	return -ENOSPC;
 }
 
-static bool region_is_gap_taken(u64 offset, const struct region_extent *taken, u32 count)
+static bool region_is_gap_taken(u32 device, u64 offset, const struct region_extent *taken, u32 count)
 {
 	for (u32 idx = 0; idx < count; idx++) {
-		if (taken[idx].offset == offset)
+		if (taken[idx].device_id == device && taken[idx].offset == offset)
 			return true;
 	}
 	return false;
@@ -365,9 +377,10 @@ static struct region_extent region_find_gap(const struct region_pool *pool, u64 
 		const u64 end = region_align_limit(pool, limit);
 		const u64 length = end > candidate ? end - candidate : 0;
 		const bool better = !best.length || (largest ? length >= best.length : length <= best.length);
-		if (length >= need && length > 0 && better && !region_is_gap_taken(candidate, taken, taken_count)) {
+		if (length >= need && length > 0 && better && !region_is_gap_taken(pool->device_id, candidate, taken, taken_count)) {
 			best.offset = candidate;
 			best.length = length;
+			best.device_id = (u16)pool->device_id;
 		}
 		if (idx < pool->count && spans[idx].end > candidate)
 			candidate = region_align_candidate(pool, spans[idx].end);
@@ -385,7 +398,7 @@ static s32 region_fill_gaps(const struct region_pool *pool, u64 size, bool large
 			/* The high end, since a contiguous placement takes the low end of a gap. */
 			out[count].offset = fit.offset + fit.length - left;
 			out[count].length = left;
-			out[count].device_id = 0;
+			out[count].device_id = (u16)pool->device_id;
 			return (s32)count + 1;
 		}
 
@@ -648,19 +661,50 @@ bool region_free_rat_entry(struct fs_sb_info *sbi, struct layout_rat_entry *entr
  * Region initialization (called from ftruncate path)
  * ============================================================================ */
 
-/*
- * region_init - allocate physical space and initialize region header
- * @sbi: superblock info
- * @rat_entry_id: RAT entry ID (must be pre-allocated in reservation mode)
- * @data_size: user-requested data size in bytes, rounded up to whole granules
- * @opts: the pool, and whether the region may lie in pieces
- * @spans: from region_alloc_spans
- *
- * Returns 0 on success, negative error code on failure.
- *
- * PRECONDITION: the caller holds the metadata lock. The gap search reads the standing extents
- * and then writes the winner, so two callers would place overlapping regions.
- */
+/* The devices a placement tries, as [@first, @last), or -EINVAL when @opts names one that cannot
+ * hold the pool. Only the primary has an uncached pool. */
+static s32 region_get_device_range(const struct fs_sb_info *sbi, const struct region_placement_opts *opts,
+				   u32 *first, u32 *last)
+{
+	if (opts->device == REGION_DEVICE_ANY) {
+		*first = FS_PRIMARY_DEVICE;
+		*last = opts->uncached ? FS_PRIMARY_DEVICE + 1 : sbi->device_count;
+		return 0;
+	}
+	if (opts->device >= sbi->device_count || (opts->uncached && opts->device != FS_PRIMARY_DEVICE))
+		return -EINVAL;
+
+	*first = opts->device;
+	*last = opts->device + 1;
+	return 0;
+}
+
+/* The first piece list of @region_size bytes that fits on device @device, or the error that says
+ * why none does. @pool carries its spans. */
+static s32 region_place_on_device(struct fs_sb_info *sbi, u32 device, const struct region_placement_opts *opts,
+				  u64 region_size, const union layout_rat_map_copy *map, struct region_pool *pool,
+				  struct region_extent *extents)
+{
+	s32 ret = region_collect_spans(sbi, device, opts->uncached, map, pool);
+	if (ret)
+		return ret;
+
+	/* The uncached pool stays contiguous, since mmap maps a region there with one remap. */
+	if (opts->paged && opts->uncached)
+		return -EINVAL;
+	if (opts->paged)
+		return region_pick_gaps(pool, region_size, extents);
+
+	ret = region_pick_gap(pool, region_size, &extents[0].offset);
+	if (ret)
+		return ret;
+	extents[0].length = region_size;
+	extents[0].device_id = (u16)device;
+	return 1;
+}
+
+/* The caller holds the metadata lock. The gap search reads the standing extents and then writes
+ * the winner, so two callers would place overlapping regions. */
 s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
 		       const struct region_placement_opts *opts, struct region_span *spans)
 {
@@ -670,19 +714,30 @@ s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
 	const bool uncached = opts->uncached;
 	const bool paged = opts->paged;
 
-	/* Reject obviously oversized requests */
-	if (data_size > sbi->total_size)
+	u32 first_device;
+	u32 last_device;
+	s32 ret = region_get_device_range(sbi, opts, &first_device, &last_device);
+	if (ret)
+		return ret;
+
+	/* Reject requests no candidate pool can hold. */
+	u64 capacity = 0;
+	for (u32 device = first_device; device < last_device; device++) {
+		u64 start;
+		u64 end;
+		region_get_pool_bounds(sbi, device, uncached, &start, &end);
+		capacity = max(capacity, end - start);
+	}
+	if (data_size > capacity)
 		return -ENOSPC;
 
 	/* The granule is the unit both pools hand out, so a region takes whole ones. */
 	u64 region_size = layout_align_up(data_size, sbi->granule);
-	if (region_size > sbi->total_size)
+	if (region_size > capacity)
 		return -ENOSPC;
 
 	/* Judged under the caller's lock: its wait sleeps, so a fence can land inside it, and the
 	 * extent placed below would carry another node's id. */
-	s32 ret = 0;
-
 	if (fs_is_fenced(sbi)) {
 		ret = -EIO;
 		goto out;
@@ -705,35 +760,20 @@ s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
 	union layout_rat_map_copy map;
 	region_read_map(sbi, &map);
 	struct region_pool pool = { .spans = spans };
-	ret = region_collect_spans(sbi, uncached, &map, &pool);
-	if (ret)
-		goto out;
-
-	/* The uncached pool stays contiguous, since mmap maps a region there with one remap. */
-	if (paged && uncached) {
-		ret = -EINVAL;
-		goto out;
-	}
 
 	struct region_extent extents[LAYOUT_MAX_EXTENTS];
-	s32 count = 1;
-	if (paged) {
-		count = region_pick_gaps(&pool, region_size, extents);
-		if (count < 0) {
-			ret = count;
-			goto out;
-		}
-	} else {
-		ret = region_pick_gap(&pool, region_size, &extents[0].offset);
-		if (ret)
-			goto out;
-		extents[0].length = region_size;
-		extents[0].device_id = 0;
+	s32 count = -ENOSPC;
+	for (u32 device = first_device; device < last_device && count == -ENOSPC; device++)
+		count = region_place_on_device(sbi, device, opts, region_size, &map, &pool, extents);
+	if (count < 0) {
+		ret = count;
+		goto out;
 	}
 
 	/* Validate region fits in DAX mapping */
 	for (s32 piece = 0; piece < count; piece++) {
-		if (!layout_is_valid_range(sbi, extents[piece].offset, extents[piece].length)) {
+		if (!layout_is_valid_range(sbi, extents[piece].device_id, extents[piece].offset,
+					   extents[piece].length)) {
 			pr_err("region_init: region 0x%llx+%llu exceeds DAX mapping\n", extents[piece].offset,
 			       extents[piece].length);
 			ret = -ENOSPC;

@@ -9,6 +9,7 @@
 #include <linux/types.h>
 
 #include "daemon_uapi.h" /* struct fs_daemon_attest_response */
+#include "layout/superblock.h"
 
 struct fs_sb_info;
 struct layout_rat_entry;
@@ -44,9 +45,13 @@ static inline u64 region_sum_extents(const struct region_extent *extents, u32 co
 	return total;
 }
 
+/* @device value that lets the allocator pick the first device the request fits. */
+#define REGION_DEVICE_ANY U32_MAX
+
 struct region_placement_opts {
 	bool uncached;
 	bool paged;
+	u32 device; /* a device index, or REGION_DEVICE_ANY */
 };
 
 /* The first free slot as the RAT's summary reads now, or LAYOUT_MAX_RAT_ENTRIES when none is. Needs
@@ -82,13 +87,13 @@ struct region_pool_usage {
 	u64 uc_used;
 	u64 wb_total;
 	u64 wb_used;
+	u64 device_wb_used[LAYOUT_MAX_DEVICES]; /* @wb_used by device */
 	u32 entries;
 };
 
 s32 region_get_pool_usage(struct fs_sb_info *sbi, struct region_pool_usage *out);
 
-/* Region placement, called from ftruncate. @opts->uncached takes the uncached pool, whose mappings
- * carry no struct pages to pin. @opts->paged allows pieces, in the write-back pool only. */
+/* A region lies on one device. */
 s32 region_init_locked(struct fs_sb_info *sbi, u32 rat_entry_id, u64 data_size,
 		       const struct region_placement_opts *opts, struct region_span *spans);
 

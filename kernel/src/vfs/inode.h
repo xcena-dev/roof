@@ -32,6 +32,7 @@ struct fs_inode_info {
 	 * it. Once placed, the first piece's offset is what says which pool holds the region. */
 	bool want_uncached;
 	bool want_paged;
+	u32 want_device; /* a device index, or REGION_DEVICE_ANY */
 	struct inode vfs_inode; /* VFS inode (must be last!) */
 };
 
@@ -51,6 +52,7 @@ static inline void fs_init_inode_info(struct fs_inode_info *xi)
 	xi->extent_count = 0;
 	xi->want_uncached = false;
 	xi->want_paged = false;
+	xi->want_device = REGION_DEVICE_ANY;
 }
 
 /* One chain, walked once: an inode names a superblock, and each of those names what this

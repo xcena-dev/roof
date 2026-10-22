@@ -389,7 +389,7 @@ static s32 inode_place_region(struct inode_ctx *ctx, u64 size)
 	if (ret)
 		goto out_free;
 
-	const struct region_placement_opts opts = { .uncached = ctx->xi->want_uncached, .paged = ctx->xi->want_paged };
+	const struct region_placement_opts opts = { .uncached = ctx->xi->want_uncached, .paged = ctx->xi->want_paged, .device = ctx->xi->want_device };
 	ret = region_init_locked(ctx->sbi, ctx->xi->rat_entry_id, size, &opts, spans);
 	if (ret) {
 		pr_err("region_init failed for rat_entry %u: %d\n", ctx->xi->rat_entry_id, ret);

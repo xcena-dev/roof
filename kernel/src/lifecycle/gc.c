@@ -359,10 +359,15 @@ static void gc_clear_extent(struct fs_sb_info *sbi, struct layout_rat_entry *ent
 	struct region_extent extents[LAYOUT_MAX_EXTENTS];
 	const s32 count = region_read_extents(sbi, (u32)(entry - rat->entries), &hot, extents);
 	for (s32 piece = 0; piece < count; piece++) {
-		void *base = layout_get_file_data_ptr(sbi, extents[piece].offset);
+		void *base = layout_get_file_data_ptr(sbi, extents[piece].device_id, extents[piece].offset);
+		if (!base) {
+			pr_warn("gc: entry %u piece %d on device %u at 0x%llx has no mapping, left uncleared\n",
+				(u32)(entry - rat->entries), piece, extents[piece].device_id, extents[piece].offset);
+			continue;
+		}
 		cxl_zero_cachelines(base, extents[piece].length);
 		/* The write-back pool's lines sit in this node's cache after the byte fallback. */
-		if (!layout_check_meta_offset(sbi, extents[piece].offset))
+		if (!layout_check_uncached_piece(sbi, extents[piece].device_id, extents[piece].offset))
 			CXL_WMB_CACHED(base, extents[piece].length);
 	}
 }

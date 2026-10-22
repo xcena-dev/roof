@@ -100,8 +100,8 @@ Otherwise it is `-EACCES`.
 | `FS_IOC_PERM_GRANT` | W | `fs_perm_req` | `ADMIN` or `GRANT`. Only `ADMIN` hands on `ADMIN` or `GRANT`. `kind` picks an account row or a role row. |
 | `FS_IOC_PERM_SET_DEFAULT` | W | `fs_perm_req` | `ADMIN` |
 | `FS_IOC_PERM_REVOKE` | W | `fs_perm_req` | An account row: nothing for a row naming the caller, `ADMIN` for any other. A role row: `ADMIN`. |
-| `FS_IOC_REGION_ATTR_SET` | W | `fs_region_attr_req` | `IOCTL`. Refused with `-EBUSY` once the region is placed, and with `-EINVAL` for a paged region in the uncached pool. |
-| `FS_IOC_REGION_ATTR_GET` | R | `fs_region_attr_req` | Nothing. It names only the pool, the placement and the piece count. |
+| `FS_IOC_REGION_ATTR_SET` | W | `fs_region_attr_req` | `IOCTL`. Refused with `-EBUSY` once the region is placed, and with `-EINVAL` for a paged region in the uncached pool, a `device` above the mount's device count, or an uncached region on a device other than 1. |
+| `FS_IOC_REGION_ATTR_GET` | R | `fs_region_attr_req` | Nothing. It names only the pool, the placement, the piece count and the device. |
 
 ## What the Module Reports
 
@@ -112,9 +112,9 @@ Under `/sys/fs/rooffs/`, readable by anyone unless noted. <!-- fsname -->
 | `node<N>/daemon_state` | Whether node N's daemon holds the channel and has greeted the kernel: `reader_open`, `hello_done`, `helper_dead`, `queue_depth`. `hello_done=1` is a mount that answers. |
 | `region_info` | One line per region: its slot, the node and process that own it, its state, size, offset and name. A show holds one page, so a full table is cut; `rat/<slot>` is the whole of it. |
 | `rat/<slot>` | One file per RAT slot with region_info's row for it, or `free`. A reader that wants every region loops over the slots. |
-| `extents/<slot>` | One line per piece of the slot's region, in file order: its device offset and its length. `rat/<slot>` shows only the first piece's offset and the total, which is all a contiguous region has. A slot with no region shows nothing. |
+| `extents/<slot>` | One line per piece of the slot's region, in file order: its device offset, its length and its device index. `rat/<slot>` shows only the first piece's offset and the total, which is all a contiguous region has. A slot with no region shows nothing. |
 | `perm_info` | One line per region: the default grant and how far its delegation rows extend. |
-| `pool_info` | The two pools the device is split into, uncached and write-back, each with its start, its size and what is free in it. `statfs` reports the two summed, so this is where a full uncached pool beside an empty write-back one shows. |
+| `pool_info` | The two pools the device is split into, uncached and write-back, each with its start, its size and what is free in it. `statfs` reports the two summed, so this is where a full uncached pool beside an empty write-back one shows. A `device <index> <start> <total> <free>` line per device follows, for that device's write-back pool. |
 | `deleg_info` | The delegation rows of one region. Root writes the region's slot number to it, then reads. |
 | `gc_status` | Per node, whether its collector thread is alive and the epoch it has reached. |
 
