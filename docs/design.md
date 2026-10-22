@@ -7,7 +7,7 @@
 | [3. Requirements](#3-requirements) | DR1 to DR8: identity, authority, enforcement and lifetime the design must provide |
 | [4. Assumptions](#4-assumptions) | The platform properties the checks rest on, and the trust boundary |
 | [5. Principles](#5-principles) | DP1 to DP6: the rules every mechanism below follows |
-| [6. Records on the Medium](#6-records-on-the-medium) | The superblock, bootstrap slots, name index, region table and extents, who writes each, and how each area is cached |
+| [6. Records on the Medium](#6-records-on-the-medium) | The superblock, bootstrap slots, name index, region table and extents, who writes each, how each area is cached, and how one filesystem spans several devices |
 | [7. Mount and Unmount](#7-mount-and-unmount) | Claiming a node id from a bootstrap slot, the lock-region row, and handing both back |
 | [8. Region Lifecycle](#8-region-lifecycle) | Create, place, open, unlink, grant and access, and freeing |
 | [9. The Daemon](#9-the-daemon) | The per-mount helper: the upcalls it answers, and how kernel and daemon trust each other |
@@ -19,7 +19,8 @@
 
 ![Architecture overview: an application, the helper daemon and the filesystem kernel module on one node, over one CXL FAM device that every node maps. The colour of a box says who owns its bytes: the kernel module holds the metadata area, the daemon's CME peer holds the lock region, and the application's mappings hold the region extents.](figs/architecture.png)
 
-Every node that mounts the device runs the same programs, and the device holds everything they share.
+Every node that mounts the device runs the same programs, and the device holds everything they share.<br>
+One filesystem can also span several dax devices, as [Several Devices](#62-several-devices) describes.
 
 | Program | Runs as | Owns on the device | Detail |
 |---|---|---|:---:|
@@ -94,6 +95,7 @@ The checks in this design rest on properties of the platform under it.
 | x86-64 | `MOVDIR64B`, AVX-512 and the cache-type calls are x86 | Another architecture needs its own line store, line load and<br>cache-type control before the module builds there |
 | Each node's clock advances | A live node's heartbeat stamp changes on every tick,<br>and a stamp too far from the reader's clock is judged by that change | A node whose clock stands still is taken for dead while it is healthy |
 | A dax device | The mount maps the device's physical range itself<br>and picks each area's memory type | An fsdax or block device needs its range read from elsewhere,<br>and its driver's write-back mapping refuses the uncached one |
+| A CXL region in front of each device<br>of a mount of several devices | The mount reads each device's memory device serial and offset through that region | A dax device that `dax_hmem` made from soft-reserved memory cannot join a mount of several devices.<br>A mount of one device does not need it |
 | Every host kernel that maps the device is trusted | Nothing reads another host's writes to shared metadata to check them | A kernel or a privileged process with raw write access can forge any row,<br>and only the Fabric Manager keeps such a host off the device |
 
 The last row is the trust boundary.<br>
@@ -123,7 +125,7 @@ Every requirement above is carried by a record, so where those records live is t
 
 | Purpose | Record | Holds | Writer | Read by |
 |:---:|---|---|---|---|
-| layout of<br>the medium | Superblock | magic, version, where each area lies,<br>granule and pool split, checksum | the formatting node, once | the mapper before either mapping exists, then every mount |
+| layout of<br>the medium | Superblock | magic, version, where each area lies,<br>granule and pool split, device list, checksum | the formatting node, once | the mapper before either mapping exists, then every mount |
 | node state | Bootstrap | state, token, heartbeat, recoverer | the slot's own node, or the admin recovering it | every mounting node, and every admin sweep |
 | names | Shard header | magic, bucket and pool geometry | the formatting node, once | every mount, then cached in DRAM |
 |  | Index link | name tag, region id, next link | the node holding the turn (`create`, `unlink`) | every name lookup |
@@ -149,6 +151,30 @@ because `memtype_reserve` hands back write-back rather than failing when another
 |---|---|---|---|
 | uncached<br>(metadata area, front of the region area) | A load reaches the device, so a peer's store is visible with nothing to flush.<br>A store leaves as one whole-line write | Cache locality: a repeated read pays fabric latency again.<br>`struct page` backing: nothing here can be pinned for DMA | Records, and a region peers exchange with single stores: a flag, a queue, a lock |
 | write-back<br>(rest of the region area) | This node's cache on a repeated read.<br>ZONE_DEVICE pages a GPU DMA registration can pin | Cross-host visibility inside the filesystem: on CXL 2.0 the producer writes its lines back and the consumer drops its copies, as with any shared memory | Bulk bytes read many times: a KV cache, a model shard |
+
+### 6.2 Several Devices
+
+One filesystem can span several dax devices, and a mount names each one with its own `daxdev=` option.<br>
+Device 0, the primary, holds every record above, the uncached pool and a write-back pool.<br>
+Every other device holds a write-back pool and nothing else.<br>
+A region piece names its device by index, so one region table describes every device.
+
+The superblock carries a device list, which the format writes once.<br>
+The list names each device by the serial of the CXL memory device behind it, the device's offset within that memory device, and its size.<br>
+It records no dax device name, because a host can show the same memory under another name.
+
+The format numbers the devices in the order of the `daxdev=` options.<br>
+A later mount makes the given device that holds the superblock device 0.<br>
+It then reads the serial and the offset of every other given device and takes that device's index from the list.<br>
+So the order of the `daxdev=` options matters to the format only.
+
+The mount is refused with `-ENODEV` in the cases below, and the kernel log names the device.
+
+- A device in the list was not given.
+- A given device is not in the list, or its size differs from the list.
+- Two given devices both hold a superblock, or are one device.
+
+A mount that went on without a device would hold regions whose extent no node can read or zero.
 
 ## 7. Mount and Unmount
 
@@ -180,6 +206,11 @@ Contiguous is the default and takes one range from the low end of the first gap 
 Paged takes the smallest gap that holds the whole size, from that gap's high end.<br>
 Only when no gap holds it does it take whole gaps, smallest first, up to four pieces.<br>
 The uncached pool takes contiguous only, since `mmap` maps a region there with one remap.
+
+Every piece of a region lies on one device.<br>
+`FS_IOC_REGION_ATTR_SET` can name that device, and the choice is fixed once the region is placed.<br>
+Without a device named, the placement tries the devices in index order and takes the first one that holds the region.<br>
+Only device 0 has an uncached pool, so an uncached region that names another device is refused with `-EINVAL`.
 
 ### 8.2 Open, Close and Unlink
 
@@ -415,6 +446,7 @@ This one states what it leaves alone, and what a later release has to add.
 | Revocation | No path revokes a permission.<br>A row ends only on the events in [Grant and Access](#83-grant-and-access). | Say what it stops: the rows, a standing mapping, or both.<br>Reach one process as well as a whole account, and a row another node wrote. |
 | Region lifetime | A region nobody holds is freed when its owner's process or mount goes,<br>even if a later reader was meant to find it. | Let an owner keep a region past its own exit and unmount.<br>Say who may end such a region and who reclaims it. |
 | Region size | A region is sized once with `ftruncate()`.<br>It is one contiguous range of the pool, or up to four pieces when it asks for a paged placement. | Grow a region by adding pieces that later mappings see.<br>Shrink only a tail that no node holds mapped. |
+| Device identity | A device of a mount of several devices is named by the first memory device of its CXL region.<br>An interleaved region is therefore named by one of its memory devices, and no interleaved setup has been tested.<br>A device with no CXL region cannot join such a mount ([Assumptions](#4-assumptions)). | Name an interleaved region by every memory device in it.<br>Name a device that has no CXL region. |
 | Root and the kernel | Trusting the host kernel means trusting root as well. | Keep root from replacing the kernel or this module once the host has booted.<br>Have the daemon confirm that it talks to this module and not to a stand-in.<br>(for example, a signed module under Secure Boot lockdown) |
 | Daemon responses | A response is trusted for the descriptor it arrived on. | Let the kernel check that a response came from the daemon it trusts,<br>not only that it arrived on the right descriptor.<br>(for example, a response signature with a key sealed in a TPM) |
 | Daemon isolation | The daemon runs as an ordinary host process. | Keep the daemon's identity and decisions out of reach of other host processes, root included.<br>Judge what a process runs and how its memory changes, not only who it was when attested.<br>(for example, a daemon in a TEE, with executables appraised at `execve`) |
