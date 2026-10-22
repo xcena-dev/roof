@@ -37,7 +37,8 @@ skip() { printf 'SKIP %s\n' "$*"; exit 77; }
 for point in "$MOUNT_A" "$MOUNT_B"; do
     mountpoint -q "$point" || skip "no mount at ${point}"
 done
-[ -r "${SYSFS}/rat/0" ] || skip "no ${SYSFS}/rat/<slot> files to read the extents from"
+[ -r "${SYSFS}/rat/0" ] || skip "no ${SYSFS}/rat/<slot> files to read the names from"
+[ -r "${SYSFS}/extents/0" ] || skip "no ${SYSFS}/extents/<slot> files to read the extents from"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -75,13 +76,26 @@ ratRows()
     done
 }
 
-# Every standing extent, sorted by offset, and any pair that overlaps.
+# Every piece of every standing region as "device start end name". A piece's offset counts from the
+# start of its own device.
+extentRows()
+{
+    local slot name
+    for slot in "${SYSFS}"/extents/*; do
+        name="$(awk -F'\t' 'NF == 6 { print $6 }' "${SYSFS}/rat/${slot##*/}")"
+        [ -n "$name" ] || continue
+        awk -F'\t' -v name="$name" 'NF == 3 && $2 > 0 { printf "%d %d %d %s\n", $3, strtonum($1), strtonum($1) + $2, name }' "$slot"
+    done
+}
+
+# Any two pieces on one device that overlap. Pieces on different devices never do.
 overlaps()
 {
-    ratRows | awk -F'\t' 'NF == 6 && $5 != "0x0" && $4 > 0 { printf "%d %d %s\n", strtonum($5), strtonum($5) + $4, $6 }' |
-        sort -n |
-        awk 'NR > 1 && $1 < prev_end { printf "%s [%d,%d) overlaps %s [%d,%d)\n", prev_name, prev_start, prev_end, $3, $1, $2 }
-             { prev_start = $1; prev_end = $2; prev_name = $3 }'
+    extentRows |
+        sort -n -k1,1 -k2,2 |
+        awk '$1 != device { device = $1; reach = 0 }
+             $2 < reach { printf "device %d: %s [%d,%d) overlaps %s [%d,%d)\n", $1, reach_name, reach_start, reach, $4, $2, $3 }
+             $3 > reach { reach = $3; reach_start = $2; reach_name = $4 }'
 }
 
 # Until @2 done markers of round @1 are there, or 120s have passed.

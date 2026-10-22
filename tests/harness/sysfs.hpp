@@ -195,15 +195,20 @@ constexpr std::string_view HexPrefix{"0x"};
     return value;
 }
 
+constexpr std::uint64_t PieceFieldCount = 3;
+
 // One piece of a region, as extents/<slot> shows it.
 struct Piece_t
 {
     std::uint64_t offset{0};
     std::uint64_t length{0};
+    std::uint32_t device{0};
 
     [[nodiscard]] bool operator==(const Piece_t& other) const noexcept
     {
-        return offset == other.offset && length == other.length;
+        return offset == other.offset &&
+               length == other.length &&
+               device == other.device;
     }
 };
 
@@ -222,11 +227,16 @@ struct Piece_t
         while (std::getline(source, line))
         {
             const auto fields = splitOnTabs(line);
-            const auto offset = fields.size() == 2 ? parseUnsigned(fields[0], HexBase) : std::nullopt;
-            const auto length = fields.size() == 2 ? parseUnsigned(fields[1]) : std::nullopt;
-            if (offset && length)
+            if (fields.size() != PieceFieldCount)
             {
-                pieces.push_back({*offset, *length});
+                continue;
+            }
+            const auto offset = parseUnsigned(fields[0], HexBase);
+            const auto length = parseUnsigned(fields[1]);
+            const auto device = parseUnsigned(fields[2]);
+            if (offset && length && device)
+            {
+                pieces.push_back({*offset, *length, static_cast<std::uint32_t>(*device)});
             }
         }
         break;
@@ -234,8 +244,16 @@ struct Piece_t
     return pieces;
 }
 
-// Where the two region pools sit and what is left in each. A pool row reads
-// "<pool> <start> <total> <free>" and the granule has a line of its own above them.
+// One "device <index> <start> <total> <free>" row: a device's write-back pool.
+struct DevicePool_t
+{
+    std::uint32_t index{0};
+    std::uint64_t wbStart{0};
+    std::uint64_t wbTotal{0};
+    std::uint64_t wbFree{0};
+};
+
+// A device's position in @devices is its index.
 struct PoolInfo_t
 {
     std::uint64_t granule{0};
@@ -245,6 +263,7 @@ struct PoolInfo_t
     std::uint64_t wbStart{0};
     std::uint64_t wbTotal{0};
     std::uint64_t wbFree{0};
+    std::vector<DevicePool_t> devices;
 };
 
 [[nodiscard]] inline std::optional<PoolInfo_t> readPoolInfo()
@@ -279,6 +298,14 @@ struct PoolInfo_t
         {
             fields >> into.wbStart >> into.wbTotal >> into.wbFree;
             sawWriteback = true;
+        }
+        else if (label == "device")
+        {
+            DevicePool_t device;
+            if (fields >> device.index >> device.wbStart >> device.wbTotal >> device.wbFree)
+            {
+                into.devices.push_back(device);
+            }
         }
     }
 

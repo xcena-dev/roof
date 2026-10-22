@@ -91,6 +91,17 @@ fs_add_case(test_exec_generation multinode)
 fs_add_case(test_fork_inherit onenode)
 fs_add_case(test_gc_deleg multinode)
 fs_add_case(test_gc_owner multinode)
+fs_add_case(test_device_placement onenode)
+fs_add_case(test_second_device_peer multinode)
+
+# Takes most of the second device's free space for a moment, so a placement beside it could be
+# refused.
+fs_add_case(test_second_device_placement onenode)
+set_tests_properties(test_second_device_placement PROPERTIES RUN_SERIAL ON)
+
+# Reads the second device's free bytes off pool_info, so any placement beside it moves what it compares.
+fs_add_case(test_second_device_free onenode)
+set_tests_properties(test_second_device_free PROPERTIES RUN_SERIAL ON)
 
 # A case that runs a second task inside one process needs the thread library, which is asked for
 # here rather than at the top where every other case would carry it.
@@ -262,6 +273,11 @@ set_tests_properties(deleg_bitmap_crash PROPERTIES LABELS lifecycle SKIP_RETURN_
 # once, on the host's own mounts. Needs root and a module with CONFIG_FS_TEST_KNOBS.
 add_test(NAME unmount_held_turn COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/unmount_held_turn.sh)
 set_tests_properties(unmount_held_turn PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
+
+# Takes the host's first mount down and mounts it again with its devices in reverse order, then with
+# one left out, then as its unit has it. Skips on a mount of one device. Needs root.
+add_test(NAME device_order_remount COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/device_order_remount.sh)
+set_tests_properties(device_order_remount PROPERTIES LABELS lifecycle SKIP_RETURN_CODE 77 RUN_SERIAL ON)
 
 # The decisions the deploy scripts record and read back, on scratch files. No root and no mount.
 add_test(NAME test_deploy_state COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_deploy_state.sh)

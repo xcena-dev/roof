@@ -6,9 +6,9 @@
 // moment. Placement scans every extent already committed and then commits into the gap it found,
 // so two nodes doing that without exclusion pick the same gap and end up sharing bytes.
 //
-// Then it reads the filesystem's sysfs region_info and says whether any two regions overlap. --raw
-// does the same rounds with plain syscalls instead of this library, which is the arm that shows
-// where the exclusion lives: the kernel takes the lock on the placement path either way.
+// Then it reads the filesystem's sysfs region_info and extents and says whether any two pieces on one
+// device overlap. --raw does the same rounds with plain syscalls instead of this library, which is the
+// arm that shows where the exclusion lives: the kernel takes the lock on the placement path either way.
 //
 //   <fs>-overlap <mount-a> <mount-b> --rounds 10
 //   <fs>-overlap <mount-a> <mount-b> --rounds 10 --raw
@@ -41,9 +41,12 @@ namespace
 
 constexpr std::uint64_t PlacementSize = fsuser::DaxAlignment;
 constexpr const char* RegionInfo = "/sys/fs/" FS_NAME_STR "/region_info";
+constexpr const char* ExtentsDir = "/sys/fs/" FS_NAME_STR "/extents/";
 
+// One piece of a region. Its offset counts from the start of its own device.
 struct Extent_t
 {
+    std::uint32_t device{0};
     std::uint64_t offset{0};
     std::uint64_t size{0};
     std::string name;
@@ -122,8 +125,8 @@ void printUsage()
 
 // ── the placement map ───────────────────────────────────────────────────
 
-// Every region the kernel has placed, read from sysfs. A region with no offset has been created but
-// not yet placed, and two of those are not a collision.
+// Every piece of every region the kernel has placed, read from sysfs. A region not yet placed has
+// no piece, and two of those are not a collision.
 [[nodiscard]] std::vector<Extent_t> readExtents()
 {
     std::vector<Extent_t> found;
@@ -146,17 +149,27 @@ void printUsage()
         {
             continue;
         }
-        const std::uint64_t placed = std::stoull(offset, nullptr, 0);
-        if (placed == 0)
+
+        std::ifstream pieces{std::string{ExtentsDir}.append(entryId)};
+        std::string piece;
+        while (std::getline(pieces, piece))
         {
-            continue;
+            std::istringstream columns{piece};
+            std::string start;
+            std::string length;
+            std::string device;
+            if (!(columns >> start >> length >> device) || std::stoull(length) == 0)
+            {
+                continue;
+            }
+            found.push_back({static_cast<std::uint32_t>(std::stoul(device)), std::stoull(start, nullptr, 0),
+                             std::stoull(length), name});
         }
-        found.push_back({placed, std::stoull(size), name});
     }
     return found;
 }
 
-// Pairs sharing physical bytes. Reported rather than counted, because which two collided is what
+// Pairs on one device that share bytes. Reported rather than counted, because which two collided
 // tells a reader whether the run reproduced the case.
 [[nodiscard]] std::int32_t reportOverlaps(const std::vector<Extent_t>& extents)
 {
@@ -168,12 +181,16 @@ void printUsage()
         {
             const auto& one = extents[left];
             const auto& two = extents[right];
+            if (one.device != two.device)
+            {
+                continue;
+            }
             const auto begin = std::max(one.offset, two.offset);
             const auto end = std::min(one.offset + one.size, two.offset + two.size);
             if (begin < end)
             {
-                std::printf("  OVERLAP [0x%" PRIx64 ", 0x%" PRIx64 ") %s vs %s\n", begin, end,
-                            one.name.c_str(), two.name.c_str());
+                std::printf("  OVERLAP device %" PRIu32 " [0x%" PRIx64 ", 0x%" PRIx64 ") %s vs %s\n", one.device, begin,
+                            end, one.name.c_str(), two.name.c_str());
                 ++collisions;
             }
         }
